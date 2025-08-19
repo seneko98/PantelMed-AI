@@ -1,0 +1,528 @@
+# assistant/steroids/questionnaire.py
+"""
+PantelMed AI - Система анкетування для підбору курсів
+Всі корективи: гіпертонія, ін'єкції, аналізи, без приватності
+"""
+
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from enum import Enum
+
+class QuestionType(Enum):
+    SELECT = "select"
+    MULTIPLE_SELECT = "multiple_select"
+    SCALE = "scale"
+    TEXT = "text"
+
+@dataclass
+class QuestionOption:
+    value: str
+    label: str
+    score: int = 0
+    restrictions: List[str] = None
+    warnings: List[str] = None
+    follow_up: str = None
+
+@dataclass
+class Question:
+    id: str
+    text: str
+    type: QuestionType
+    required: bool = True
+    options: List[QuestionOption] = None
+    validation: Dict = None
+    conditional_logic: Dict = None
+
+class SteroidQuestionnaire:
+    """Система анкетування з усіма корективами"""
+    
+    def __init__(self):
+        self.questions = self._build_questionnaire()
+        self.total_questions = len(self.questions)
+        self.question_flow = self._build_question_flow()
+    
+    def _build_questionnaire(self) -> Dict[str, Question]:
+        """Побудова анкети з корективами"""
+        
+        questions = {}
+        
+        # ===========================================
+        # ОСОБИСТІ ДАНІ
+        # ===========================================
+        
+        questions["age"] = Question(
+            id="age",
+            text="Ваш вік?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("18-20", "18-20 років", score=1, 
+                             restrictions=["minimal_doses"], 
+                             warnings=["Незавершений розвиток гормональної системи"]),
+                QuestionOption("21-25", "21-25 років", score=2, 
+                             restrictions=["beginner_doses"]),
+                QuestionOption("26-35", "26-35 років", score=3),
+                QuestionOption("36-40", "36-40 років", score=2, 
+                             restrictions=["careful_doses"]),
+                QuestionOption("40+", "40+ років", score=1, 
+                             restrictions=["special_protocols", "atherosclerosis_check"],
+                             warnings=["Потрібен посилений моніторинг"])
+            ]
+        )
+        
+        questions["weight"] = Question(
+            id="weight",
+            text="Ваша вага?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("<60", "Менше 60 кг", score=1),
+                QuestionOption("60-70", "60-70 кг", score=2),
+                QuestionOption("71-85", "71-85 кг", score=3),
+                QuestionOption("86-100", "86-100 кг", score=3),
+                QuestionOption(">100", "Понад 100 кг", score=3)
+            ]
+        )
+        
+        questions["height"] = Question(
+            id="height", 
+            text="Ваш зріст?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("<170", "Менше 170 см", score=2),
+                QuestionOption("170-180", "170-180 см", score=3),
+                QuestionOption("181-190", "181-190 см", score=3),
+                QuestionOption(">190", "Понад 190 см", score=3)
+            ]
+        )
+        
+        # ===========================================
+        # ДОСВІД
+        # ===========================================
+        
+        questions["cycle_count"] = Question(
+            id="cycle_count",
+            text="Скільки курсів ви вже робили?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("0", "0 (перший курс)", score=1),
+                QuestionOption("1-2", "1-2 курси", score=2),
+                QuestionOption("3-5", "3-5 курсів", score=3),
+                QuestionOption(">5", "Більше 5 курсів", score=4)
+            ]
+        )
+        
+        questions["previous_compounds"] = Question(
+            id="previous_compounds",
+            text="Які препарати вже використовували? (можна кілька)",
+            type=QuestionType.MULTIPLE_SELECT,
+            required=False,
+            conditional_logic={"show_if": {"cycle_count": ["1-2", "3-5", ">5"]}},
+            options=[
+                QuestionOption("testosterone", "Тільки тестостерон"),
+                QuestionOption("oral_mild", "Тест + таблетки (оксан, турін)"),
+                QuestionOption("injectable_mild", "Тест + ін'єкційні (мастерон, прімо)"),
+                QuestionOption("complex", "Складні курси (болденон, дека)"),
+                QuestionOption("hardcore", "Жорсткі препарати (тренболон, халотестін)")
+            ]
+        )
+        
+        # ===========================================
+        # МЕДИЧНІ ОБМЕЖЕННЯ
+        # ===========================================
+        
+        questions["alopecia"] = Question(
+            id="alopecia",
+            text="Чи є проблеми з випадінням волосся?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("none", "Ні, густе волосся", score=3),
+                QuestionOption("mild", "Легке поредіння", score=2, 
+                             restrictions=["dht_microdoses_only"]),
+                QuestionOption("active", "Активна алопеція", score=0, 
+                             restrictions=["exclude_all_dht"],
+                             warnings=["ДГТ похідні повністю заборонені"]),
+                QuestionOption("genetic", "Генетична схильність в родині", score=1,
+                             restrictions=["dht_caution"])
+            ]
+        )
+        
+        questions["prostate"] = Question(
+            id="prostate",
+            text="Чи є проблеми з передміхуровою залозою?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("healthy", "Ні, все добре", score=3),
+                QuestionOption("mild", "Легкі проблеми (нічні походи в туалет)", score=2,
+                             restrictions=["dht_caution"]),
+                QuestionOption("diagnosed", "Діагностовані проблеми", score=0,
+                             restrictions=["exclude_all_dht"],
+                             warnings=["ДГТ похідні заборонені"])
+            ]
+        )
+        
+        questions["liver"] = Question(
+            id="liver",
+            text="Стан печінки?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("healthy", "Здорова печінка", score=3),
+                QuestionOption("elevated", "Підвищені АЛТ/АСТ", score=2,
+                             restrictions=["limit_orals"]),
+                QuestionOption("problems", "Проблеми з печінкою", score=0,
+                             restrictions=["injectable_only"],
+                             warnings=["Тільки ін'єкційні препарати"]),
+                QuestionOption("no_tests", "Не здавав аналізи", score=1,
+                             restrictions=["require_tests"],
+                             warnings=["Необхідно здати аналізи печінки"])
+            ]
+        )
+        
+        questions["joints"] = Question(
+            id="joints",
+            text="Чи є проблеми з суглобами?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("healthy", "Ні", score=3),
+                QuestionOption("old_injuries", "Старі травми", score=2,
+                             restrictions=["stanozolol_caution"]),
+                QuestionOption("active_problems", "Активні проблеми", score=0,
+                             restrictions=["exclude_stanozolol"],
+                             warnings=["Станозолол заборонений"])
+            ]
+        )
+        
+        # КОРЕКТИВИ: Гіпертонія з новим протоколом
+        questions["blood_pressure"] = Question(
+            id="blood_pressure",
+            text="Який у вас артеріальний тиск?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("normal", "Нормальний (120/80)", score=3),
+                QuestionOption("slightly_high", "Трохи підвищений (130-140/90)", score=2,
+                             restrictions=["bp_monitoring"]),
+                QuestionOption("hypertension", "Гіпертонія", score=1,
+                             restrictions=["reduced_doses", "bp_control_mandatory"],
+                             warnings=[
+                                 "⚠️ ОБОВ'ЯЗКОВО:",
+                                 "• Сартани (за призначенням лікаря)",
+                                 "• Магній 400мг на день", 
+                                 "• Тадалафіл 5-10мг на ніч (ОБЕРЕЖНО - може обвалити тиск)",
+                                 "• Щоденний моніторинг тиску вранці та ввечері"
+                             ])
+            ]
+        )
+        
+        # КОРЕКТИВИ: Атеросклероз для 38+
+        questions["atherosclerosis"] = Question(
+            id="atherosclerosis",
+            text="Чи є підозра на атеросклероз? (для 38+)",
+            type=QuestionType.SELECT,
+            conditional_logic={"show_if": {"age": ["36-40", "40+"]}},
+            options=[
+                QuestionOption("no_risk", "Немає підозри", score=3),
+                QuestionOption("suspected", "Є підозра на атеросклероз", score=0,
+                             restrictions=["no_orals_strictly", "no_high_test_doses", "consultation_mandatory"],
+                             warnings=[
+                                 "❌ СУВОРО ЗАБОРОНЕНО:",
+                                 "• Всі таблетки",
+                                 "• Високі дози тестостерону",
+                                 "• Максимум 250мг тестостерону",
+                                 "• Консультація кардіолога ОБОВ'ЯЗКОВА"
+                             ])
+            ]
+        )
+        
+        # ===========================================
+        # ЦІЛІ ТА ПАРАМЕТРИ КУРСУ
+        # ===========================================
+        
+        questions["main_goal"] = Question(
+            id="main_goal",
+            text="Яка ваша головна ціль?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("mass_gain", "Набір м'язової маси"),
+                QuestionOption("cutting", "Сушка/рельєф"),
+                QuestionOption("recomposition", "Рекомпозиція"),
+                QuestionOption("competition_prep", "Підготовка до змагань"),
+                QuestionOption("strength", "Збільшення сили"),
+                QuestionOption("sports_performance", "Спортивні показники")
+            ]
+        )
+        
+        questions["sport_type"] = Question(
+            id="sport_type",
+            text="Ваш вид спорту?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("bodybuilding", "Бодібілдинг"),
+                QuestionOption("powerlifting", "Пауерліфтинг/силовий екстрім"),
+                QuestionOption("martial_arts", "Єдиноборства (ММА, бокс, грепплінг)"),
+                QuestionOption("athletics", "Легка атлетика (спринт, стрибки)"),
+                QuestionOption("team_sports", "Командні види спорту"),
+                QuestionOption("fitness", "Фітнес/аматорські тренування")
+            ]
+        )
+        
+        questions["duration"] = Question(
+            id="duration",
+            text="Яку тривалість курсу вам потрібно?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("4_weeks", "4 тижні (швидкий ефект)",
+                             warnings=["Призначено ВИКЛЮЧНО для спортивних показників, не для росту м'язів"]),
+                QuestionOption("8_weeks", "8 тижнів (стандарт)"),
+                QuestionOption("10-12_weeks", "10-12 тижнів (оптимум)"),
+                QuestionOption("14-16_weeks", "14-16 тижнів (довгий)",
+                             restrictions=["experienced_only"])
+            ]
+        )
+        
+        # КОРЕКТИВИ: Нова система готовності до ін'єкцій  
+        questions["injection_readiness"] = Question(
+            id="injection_readiness",
+            text="Ваша готовність робити ін'єкції?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("no", "Категорично ні", 
+                             restrictions=["orals_only"],
+                             warnings=["❌ НЕ РЕКОМЕНДУЄТЬСЯ - тільки таблетки"]),
+                QuestionOption("scared_help", "Страшно/буду просити когось робити ін'єкції",
+                             restrictions=["once_weekly"],
+                             warnings=[
+                                 "❌ НЕ РЕКОМЕНДУЄТЬСЯ - нестабільні гормони",
+                                 "⚠️ Якщо 375-500мг тест енантат - більша ароматизація",
+                                 "⚠️ Все одно треба ставити пропіонат на виході з курсу"
+                             ]),
+                QuestionOption("twice_weekly", "Без проблем ін'єкції два рази на тиждень довгими ефірами"),
+                QuestionOption("comfortable", "Нормально (через день)"),
+                QuestionOption("daily", "Без проблем (щодня)")
+            ]
+        )
+        
+        # ===========================================
+        # БЮДЖЕТ
+        # ===========================================
+        
+        questions["budget"] = Question(
+            id="budget",
+            text="Ваш бюджет на курс? (в доларах)",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("<50", "До $50 (до 2100 грн)"),
+                QuestionOption("50-120", "$50-120 (2100-5000 грн)"),
+                QuestionOption("120-240", "$120-240 (5000-10000 грн)"),
+                QuestionOption(">240", "Понад $240 (10000+ грн)"),
+                QuestionOption("unlimited", "Бюджет не обмежений")
+            ]
+        )
+        
+        # КОРЕКТИВИ: Фінансова здатність здавати аналізи
+        questions["lab_monitoring"] = Question(
+            id="lab_monitoring", 
+            text="Ваша фінансова здатність здавати аналізи на курсі?",
+            type=QuestionType.SELECT,
+            options=[
+                QuestionOption("regular", "Можу здавати регулярно",
+                             follow_up="Естрадіол через 10 днів від початку курсу, щомісячно естрадіол + пролактин + ЗАК + ліпідограма з ліпопротеїдами низької та дуже низької щільності"),
+                QuestionOption("limited", "Обмежений доступ",
+                             follow_up="Щомісячно естрадіол + пролактин + ЗАК + ліпідограма з ліпопротеїдами низької та дуже низької щільності через 4-6 тижнів після початку курсу по можливості"),
+                QuestionOption("difficult", "Складно здавати",
+                             follow_up="По можливості з цього списку раз в місяць: естрадіол + пролактин + ЗАК + ліпідограма з ліпопротеїдами низької та дуже низької щільності")
+            ]
+        )
+        
+        return questions
+    
+    def _build_question_flow(self) -> Dict[str, str]:
+        """Побудова потоку питань"""
+        
+        return {
+            "start": "age",
+            "age": "weight", 
+            "weight": "height",
+            "height": "cycle_count",
+            "cycle_count": "previous_compounds",  # умовно
+            "previous_compounds": "alopecia",
+            "alopecia": "prostate",
+            "prostate": "liver", 
+            "liver": "joints",
+            "joints": "blood_pressure",
+            "blood_pressure": "atherosclerosis",  # умовно для 38+
+            "atherosclerosis": "main_goal",
+            "main_goal": "sport_type",
+            "sport_type": "duration",
+            "duration": "injection_readiness",
+            "injection_readiness": "budget",
+            "budget": "lab_monitoring",
+            "lab_monitoring": "end"
+        }
+    
+    def get_first_question(self) -> Dict:
+        """Отримання першого питання"""
+        
+        first_q_id = self.question_flow["start"]
+        question = self.questions[first_q_id]
+        
+        return self._format_question(question)
+    
+    def get_next_question(self, current_question_id: str, answers: Dict) -> Optional[Dict]:
+        """Отримання наступного питання з урахуванням умовної логіки"""
+        
+        # Стандартний наступний крок
+        next_id = self.question_flow.get(current_question_id)
+        
+        if not next_id or next_id == "end":
+            return None
+        
+        # Перевірка умовної логіки
+        next_question = self.questions[next_id]
+        
+        # Пропуск питання якщо не підходить умова
+        if self._should_skip_question(next_question, answers):
+            return self.get_next_question(next_id, answers)
+        
+        return self._format_question(next_question)
+    
+    def _should_skip_question(self, question: Question, answers: Dict) -> bool:
+        """Перевірка чи потрібно пропустити питання"""
+        
+        if not question.conditional_logic:
+            return False
+        
+        show_if = question.conditional_logic.get("show_if", {})
+        
+        for condition_key, required_values in show_if.items():
+            user_answer = answers.get(condition_key)
+            if user_answer not in required_values:
+                return True
+        
+        return False
+    
+    def _format_question(self, question: Question) -> Dict:
+        """Форматування питання для API"""
+        
+        formatted = {
+            "id": question.id,
+            "text": question.text,
+            "type": question.type.value,
+            "required": question.required
+        }
+        
+        if question.options:
+            formatted["options"] = []
+            for option in question.options:
+                option_data = {
+                    "value": option.value,
+                    "label": option.label
+                }
+                
+                if option.warnings:
+                    option_data["warnings"] = option.warnings
+                
+                if option.follow_up:
+                    option_data["follow_up"] = option.follow_up
+                
+                formatted["options"].append(option_data)
+        
+        return formatted
+    
+    def calculate_questionnaire_score(self, answers: Dict) -> Dict:
+        """Розрахунок загального скору анкети"""
+        
+        total_score = 0
+        max_score = 0
+        restrictions = []
+        warnings = []
+        
+        for q_id, answer in answers.items():
+            if q_id not in self.questions:
+                continue
+                
+            question = self.questions[q_id]
+            
+            if question.options:
+                for option in question.options:
+                    if option.value == answer:
+                        total_score += option.score
+                        max_score += 3  # Максимальний скор
+                        
+                        if option.restrictions:
+                            restrictions.extend(option.restrictions)
+                        
+                        if option.warnings:
+                            warnings.extend(option.warnings)
+                        break
+        
+        safety_level = "high"
+        if restrictions:
+            safety_level = "medium"
+        if any(r in restrictions for r in ["exclude_all_dht", "injectable_only", "consultation_mandatory"]):
+            safety_level = "low"
+        
+        return {
+            "total_score": total_score,
+            "max_score": max_score,
+            "percentage": round((total_score / max_score) * 100) if max_score > 0 else 0,
+            "safety_level": safety_level,
+            "restrictions": list(set(restrictions)),
+            "warnings": list(set(warnings))
+        }
+    
+    def get_question_by_id(self, question_id: str) -> Optional[Question]:
+        """Отримання питання за ID"""
+        return self.questions.get(question_id)
+    
+    def validate_answer(self, question_id: str, answer: str) -> Dict:
+        """Валідація відповіді"""
+        
+        question = self.questions.get(question_id)
+        if not question:
+            return {"valid": False, "error": "Питання не знайдено"}
+        
+        if question.required and not answer:
+            return {"valid": False, "error": "Відповідь обов'язкова"}
+        
+        if question.options:
+            valid_values = [opt.value for opt in question.options]
+            if answer not in valid_values:
+                return {"valid": False, "error": "Некоректна відповідь"}
+        
+        return {"valid": True}
+    
+    def get_summary_for_ai(self, answers: Dict) -> str:
+        """Генерація резюме для AI аналізу"""
+        
+        summary = "📊 Резюме анкети користувача:\n\n"
+        
+        # Базові дані
+        age = answers.get("age", "невідомо")
+        weight = answers.get("weight", "невідомо") 
+        experience = answers.get("cycle_count", "0")
+        goal = answers.get("main_goal", "невідомо")
+        
+        summary += f"👤 Особисті дані: {age} років, {weight} кг\n"
+        summary += f"💪 Досвід: {experience} курсів\n"
+        summary += f"🎯 Ціль: {goal}\n\n"
+        
+        # Обмеження
+        restrictions = []
+        if answers.get("alopecia") in ["active", "mild"]:
+            restrictions.append("алопеція")
+        if answers.get("blood_pressure") == "hypertension":
+            restrictions.append("гіпертонія")
+        if answers.get("injection_readiness") == "no":
+            restrictions.append("тільки таблетки")
+        
+        if restrictions:
+            summary += f"⚠️ Обмеження: {', '.join(restrictions)}\n"
+        
+        # Особливості
+        injection_pref = answers.get("injection_readiness", "невідомо")
+        budget = answers.get("budget", "невідомо")
+        monitoring = answers.get("lab_monitoring", "невідомо")
+        
+        summary += f"💉 Ін'єкції: {injection_pref}\n"
+        summary += f"💰 Бюджет: {budget}\n"
+        summary += f"🔬 Моніторинг: {monitoring}\n"
+        
+        return summary
