@@ -1,0 +1,645 @@
+# assistant/steroids/supplements.py
+"""
+PantelMed AI - Система БАДів та супплементів
+Повна база підтримки для курсів, ПКТ та загального здоров'я
+"""
+
+from typing import Dict, List, Optional
+from dataclasses import dataclass
+from enum import Enum
+import json
+
+class SupplementCategory(Enum):
+    ON_CYCLE = "on_cycle"
+    PCT = "pct" 
+    GENERAL_HEALTH = "general_health"
+    EMERGENCY = "emergency"
+    HRT = "hrt"
+
+class SupplementTiming(Enum):
+    MORNING = "morning"
+    EVENING = "evening"
+    WITH_FOOD = "with_food"
+    EMPTY_STOMACH = "empty_stomach"
+    PRE_WORKOUT = "pre_workout"
+    POST_WORKOUT = "post_workout"
+    BEFORE_BED = "before_bed"
+
+@dataclass
+class Supplement:
+    name: str
+    category: SupplementCategory
+    dosage: str
+    timing: SupplementTiming
+    duration: str
+    cost_usd: float
+    purpose: str
+    side_effects: List[str] = None
+    interactions: List[str] = None
+    contraindications: List[str] = None
+
+class SupplementsDatabase:
+    """База даних БАДів з цінами в USD (курс 42:1)"""
+    
+    def __init__(self):
+        self.supplements = self._build_supplements_database()
+    
+    def _build_supplements_database(self) -> Dict[str, Supplement]:
+        """Побудова повної бази БАДів"""
+        
+        supplements = {}
+        
+        # ===========================================
+        # ПІДТРИМКА НА КУРСІ
+        # ===========================================
+        
+        # Захист печінки
+        supplements["nac"] = Supplement(
+            name="NAC (N-ацетилцистеїн)",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="600мг щодня",
+            timing=SupplementTiming.EMPTY_STOMACH,
+            duration="весь курс + 2 тижні після",
+            cost_usd=8.0,  # 340/42
+            purpose="Детоксикація печінки, антиоксидант",
+            side_effects=["можливе розладження шлунку"],
+            contraindications=["астма (обережно)"]
+        )
+        
+        supplements["milk_thistle"] = Supplement(
+            name="Розторопша (Silymarin)",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="150-300мг 2 рази на день",
+            timing=SupplementTiming.WITH_FOOD,
+            duration="весь курс",
+            cost_usd=6.0,  # 250/42
+            purpose="Захист та відновлення печінки",
+            side_effects=["рідко - діарея"]
+        )
+        
+        supplements["tudca"] = Supplement(
+            name="TUDCA (Тауроурсодезоксихолієва кислота)",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="250-500мг 1-2 рази на день",
+            timing=SupplementTiming.WITH_FOOD,
+            duration="з оральними стероїдами",
+            cost_usd=25.0,  # 1050/42
+            purpose="Потужний гепатопротектор",
+            side_effects=["діарея при передозуванні"],
+            interactions=["може знижувати всмоктування жиророзчинних вітамінів"]
+        )
+        
+        supplements["rosehip_extract"] = Supplement(
+            name="Екстракт шипшини",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="1 раз на день",
+            timing=SupplementTiming.MORNING,
+            duration="весь курс",
+            cost_usd=3.5,  # 145/42 
+            purpose="Вітамін С, підтримка імунітету",
+            side_effects=["рідко - розладування шлунку"]
+        )
+        
+        supplements["succinic_acid"] = Supplement(
+            name="Бурштинова кислота",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="500мг раз на день",
+            timing=SupplementTiming.MORNING,
+            duration="курс 2-3 тижні",
+            cost_usd=4.0,  # 170/42
+            purpose="Енергетичний метаболізм, детокс",
+            side_effects=["печія"],
+            contraindications=["виразкова хвороба"]
+        )
+        
+        # Кров та серцево-судинна система
+        supplements["omega_3"] = Supplement(
+            name="Омега-3 (EPA/DHA)",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="2-3г щодня",
+            timing=SupplementTiming.WITH_FOOD,
+            duration="постійно",
+            cost_usd=12.0,  # 500/42
+            purpose="Розрідження крові, протизапальний ефект",
+            side_effects=["рибний присмак"],
+            interactions=["посилює дію антикоагулянтів"]
+        )
+        
+        supplements["vitamin_e_tocotrienols"] = Supplement(
+            name="Вітамін Е (токотрієноли)",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="1 капсула щодня",
+            timing=SupplementTiming.WITH_FOOD,
+            duration="весь курс",
+            cost_usd=15.0,  # 630/42
+            purpose="Антиоксидант, захист судин",
+            contraindications=["високі дози при прийомі варфарину"]
+        )
+        
+        supplements["garlic_extract"] = Supplement(
+            name="Екстракт часнику",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="1 капсула щодня",
+            timing=SupplementTiming.WITH_FOOD,
+            duration="весь курс",
+            cost_usd=8.0,  # 340/42
+            purpose="Розрідження крові, зниження холестерину",
+            side_effects=["запах", "розладування шлунку"],
+            interactions=["посилює антикоагулянти"]
+        )
+        
+        supplements["nattokinase"] = Supplement(
+            name="Наттокіназа",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="100-200 FU",
+            timing=SupplementTiming.EMPTY_STOMACH,
+            duration="при високому гематокриті",
+            cost_usd=20.0,  # 840/42
+            purpose="Природний тромболітик",
+            contraindications=["прийом антикоагулянтів"],
+            interactions=["кровотеча при комбінації з розріджувачами"]
+        )
+        
+        # Ліпідний профіль
+        supplements["berberine"] = Supplement(
+            name="Берберин",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="500мг 2 рази на день",
+            timing=SupplementTiming.WITH_FOOD,
+            duration="весь курс",
+            cost_usd=10.0,  # 420/42
+            purpose="Зниження холестерину та цукру",
+            side_effects=["розладування ШКТ спочатку"],
+            interactions=["може посилювати дію метформіну"]
+        )
+        
+        supplements["psyllium_fiber"] = Supplement(
+            name="Псиліум (клітковина)",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="5-10г щодня",
+            timing=SupplementTiming.EVENING,
+            duration="постійно",
+            cost_usd=7.0,  # 295/42
+            purpose="Зниження холестерину, травлення",
+            side_effects=["здуття спочатку"],
+            interactions=["знижує всмоктування ліків - приймати окремо"]
+        )
+        
+        supplements["niacin"] = Supplement(
+            name="Ніацин (нікотинова кислота)",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="500мг (починати з меншого)",
+            timing=SupplementTiming.WITH_FOOD,
+            duration="за потребою",
+            cost_usd=5.0,  # 210/42
+            purpose="Підвищення HDL, зниження LDL",
+            side_effects=["червоніння обличчя", "свербіж"],
+            contraindications=["захворювання печінки"]
+        )
+        
+        # Шкіра та акне
+        supplements["zinc"] = Supplement(
+            name="Цинк",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="25-30мг",
+            timing=SupplementTiming.EVENING,
+            duration="весь курс",
+            cost_usd=6.0,  # 250/42
+            purpose="Боротьба з акне, імунітет",
+            side_effects=["нудота на порожній шлунок"],
+            interactions=["знижує всмоктування міді"]
+        )
+        
+        supplements["vitamin_a"] = Supplement(
+            name="Вітамін А (ретинол)",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="500-1000мкг щодня",
+            timing=SupplementTiming.WITH_FOOD,
+            duration="весь курс",
+            cost_usd=8.0,  # 340/42
+            purpose="Здоров'я шкіри, зір",
+            contraindications=["вагітність", "високі дози токсичні"],
+            interactions=["не з бета-каротином у високих дозах"]
+        )
+        
+        supplements["msm"] = Supplement(
+            name="MSM (Метилсульфонілметан)",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="1000-2000мг 1-2 рази на день",
+            timing=SupplementTiming.WITH_FOOD,
+            duration="весь курс",
+            cost_usd=10.0,  # 420/42
+            purpose="Шкіра, суглоби, детоксикація",
+            side_effects=["головний біль спочатку"]
+        )
+        
+        supplements["reishi"] = Supplement(
+            name="Рейші (гриб)",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="1-2 капсули",
+            timing=SupplementTiming.EVENING,
+            duration="весь курс",
+            cost_usd=12.0,  # 500/42
+            purpose="Адаптоген, імунітет, анти-андрогенний ефект",
+            side_effects=["сонливість"]
+        )
+        
+        # Простата
+        supplements["saw_palmetto"] = Supplement(
+            name="Со Пальметто",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="120мг",
+            timing=SupplementTiming.EVENING,
+            duration="з ДГТ похідними",
+            cost_usd=8.0,  # 340/42
+            purpose="Здоров'я простати",
+            side_effects=["розладування шлунку"],
+            interactions=["може впливати на гормони"]
+        )
+        
+        supplements["pygeum_africanum"] = Supplement(
+            name="Пігеум африканський",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="50мг",
+            timing=SupplementTiming.EVENING,
+            duration="з ДГТ похідними",
+            cost_usd=10.0,  # 420/42
+            purpose="Здоров'я простати, протизапальний",
+            side_effects=["рідко - ШКТ розлади"]
+        )
+        
+        supplements["pumpkin_seed_oil"] = Supplement(
+            name="Олія гарбузового насіння",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="1 капсула 2 рази на день",
+            timing=SupplementTiming.WITH_FOOD,
+            duration="профілактично",
+            cost_usd=7.0,  # 295/42
+            purpose="Простата, сечостатеві шляхи"
+        )
+        
+        # Серцево-судинна система
+        supplements["coq10"] = Supplement(
+            name="Коензим Q10",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="100мг щодня",
+            timing=SupplementTiming.MORNING,
+            duration="весь курс",
+            cost_usd=15.0,  # 630/42
+            purpose="Енергія міокарда, антиоксидант",
+            interactions=["може знижувати ефект варфарину"]
+        )
+        
+        supplements["magnesium"] = Supplement(
+            name="Магній (малат або треонат)",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="400мг щодня",
+            timing=SupplementTiming.EVENING,
+            duration="постійно",
+            cost_usd=8.0,  # 340/42
+            purpose="М'язи, нерви, серце, тиск",
+            side_effects=["діарея при передозуванні"],
+            interactions=["знижує всмоктування деяких антибіотиків"]
+        )
+        
+        # КОРЕКТИВИ: Спеціально для гіпертонії
+        supplements["tadalafil"] = Supplement(
+            name="Тадалафіл",
+            category=SupplementCategory.ON_CYCLE,
+            dosage="5-10мг на ніч",
+            timing=SupplementTiming.BEFORE_BED,
+            duration="при гіпертонії",
+            cost_usd=20.0,  # 840/42
+            purpose="Зниження тиску, покращення кровотоку",
+            side_effects=["головний біль", "закладеність носу"],
+            contraindications=["прийом нітратів"],
+            interactions=["МОЖЕ ОБВАЛИТИ ТИСК - контроль щодня!"]
+        )
+        
+        # ===========================================
+        # ПКТ СУППЛЕМЕНТИ
+        # ===========================================
+        
+        supplements["daa"] = Supplement(
+            name="DAA (D-аспарагінова кислота)",
+            category=SupplementCategory.PCT,
+            dosage="3000мг щодня",
+            timing=SupplementTiming.MORNING,
+            duration="4 тижні",
+            cost_usd=12.0,  # 500/42
+            purpose="Стимуляція природного тестостерону",
+            side_effects=["роздратування при тривалому прийомі"]
+        )
+        
+        supplements["creatine_pct"] = Supplement(
+            name="Креатин моногідрат",
+            category=SupplementCategory.PCT,
+            dosage="10-15г щодня",
+            timing=SupplementTiming.POST_WORKOUT,
+            duration="весь період ПКТ",
+            cost_usd=8.0,  # 340/42
+            purpose="Підтримка сили та об'єму м'язів",
+            side_effects=["затримка води"]
+        )
+        
+        supplements["citrulline_arginine"] = Supplement(
+            name="Цитрулін + Аргінін",
+            category=SupplementCategory.PCT,
+            dosage="4-6г",
+            timing=SupplementTiming.PRE_WORKOUT,
+            duration="ПКТ + 2 тижні",
+            cost_usd=10.0,  # 420/42
+            purpose="Пампінг, судинна функція"
+        )
+        
+        supplements["glutamine"] = Supplement(
+            name="L-Глютамін",
+            category=SupplementCategory.PCT,
+            dosage="5-10г щодня",
+            timing=SupplementTiming.POST_WORKOUT,
+            duration="ПКТ",
+            cost_usd=8.0,  # 340/42
+            purpose="Відновлення, імунітет, ШКТ"
+        )
+        
+        supplements["hmb"] = Supplement(
+            name="HMB (β-гідрокси β-метилбутират)",
+            category=SupplementCategory.PCT,
+            dosage="3г щодня",
+            timing=SupplementTiming.WITH_FOOD,
+            duration="2-3 місяці",
+            cost_usd=20.0,  # 840/42
+            purpose="Антикатаболічний ефект",
+            side_effects=["дорогий, ефект помірний"]
+        )
+        
+        # Мінерали та вітаміни для ПКТ
+        supplements["zinc_pct"] = Supplement(
+            name="Цинк (для ПКТ)",
+            category=SupplementCategory.PCT,
+            dosage="50мг щодня",
+            timing=SupplementTiming.EVENING,
+            duration="весь період ПКТ",
+            cost_usd=6.0,  # 250/42
+            purpose="Синтез тестостерону",
+            side_effects=["нудота на порожній шлунок"]
+        )
+        
+        supplements["vitamin_d"] = Supplement(
+            name="Вітамін D3",
+            category=SupplementCategory.PCT,
+            dosage="5000-10000 МО щодня",
+            timing=SupplementTiming.MORNING,
+            duration="постійно",
+            cost_usd=5.0,  # 210/42
+            purpose="Гормональна функція, імунітет",
+            contraindications=["гіперкальціємія"]
+        )
+        
+        supplements["boron"] = Supplement(
+            name="Бор",
+            category=SupplementCategory.PCT,
+            dosage="3мг щодня",
+            timing=SupplementTiming.MORNING,
+            duration="ПКТ",
+            cost_usd=7.0,  # 295/42
+            purpose="Збільшення вільного тестостерону",
+            side_effects=["рідко - головний біль"]
+        )
+        
+        supplements["magnesium_glycinate"] = Supplement(
+            name="Магній гліцинат",
+            category=SupplementCategory.PCT,
+            dosage="400мг",
+            timing=SupplementTiming.BEFORE_BED,
+            duration="постійно",
+            cost_usd=10.0,  # 420/42
+            purpose="Сон, відновлення, гормони",
+            side_effects=["сонливість"]
+        )
+        
+        supplements["vitamin_c"] = Supplement(
+            name="Вітамін С (ліпосомальний)",
+            category=SupplementCategory.PCT,
+            dosage="500-1000мг",
+            timing=SupplementTiming.MORNING,
+            duration="ПКТ",
+            cost_usd=8.0,  # 340/42
+            purpose="Антиоксидант, кортизол",
+            side_effects=["діарея при великих дозах"]
+        )
+        
+        # Сон та нейротрансмітери
+        supplements["glycine"] = Supplement(
+            name="Гліцин",
+            category=SupplementCategory.PCT,
+            dosage="1-3г",
+            timing=SupplementTiming.BEFORE_BED,
+            duration="за потребою",
+            cost_usd=5.0,  # 210/42
+            purpose="Покращення сну, розслаблення",
+            side_effects=["сонливість"]
+        )
+        
+        supplements["l_theanine"] = Supplement(
+            name="L-Теанін",
+            category=SupplementCategory.PCT,
+            dosage="200мг",
+            timing=SupplementTiming.EVENING,
+            duration="за потребою",
+            cost_usd=10.0,  # 420/42
+            purpose="Релаксація без сонливості",
+            interactions=["може посилювати дію седативних"]
+        )
+        
+        supplements["gaba"] = Supplement(
+            name="ГАМК (GABA)",
+            category=SupplementCategory.PCT,
+            dosage="500-750мг",
+            timing=SupplementTiming.EVENING,
+            duration="за потребою",
+            cost_usd=8.0,  # 340/42
+            purpose="Заспокійливий ефект",
+            side_effects=["сонливість"]
+        )
+        
+        # Високий пролактин
+        supplements["vitex"] = Supplement(
+            name="Вітекс священний",
+            category=SupplementCategory.PCT,
+            dosage="1-2 капсули щодня",
+            timing=SupplementTiming.MORNING,
+            duration="4-6 тижнів",
+            cost_usd=8.0,  # 340/42
+            purpose="Зниження пролактину природним шляхом",
+            side_effects=["розладування ШКТ"],
+            interactions=["може впливати на гормони"]
+        )
+        
+        # ===========================================
+        # ЕКСТРЕНІ ВТРУЧАННЯ
+        # ===========================================
+        
+        supplements["heptral"] = Supplement(
+            name="Гептрал (адеметіонін)",
+            category=SupplementCategory.EMERGENCY,
+            dosage="10 ін'єкцій курсом",
+            timing=SupplementTiming.MORNING,
+            duration="після ПКТ, не під час",
+            cost_usd=50.0,  # 2100/42
+            purpose="Повне відновлення організму",
+            side_effects=["дорогий", "рецептурний"],
+            contraindications=["не під час ПКТ"]
+        )
+        
+        # При високому гематокриті
+        supplements["aspirin_low_dose"] = Supplement(
+            name="Аспірин (мікродози)",
+            category=SupplementCategory.EMERGENCY,
+            dosage="75-100мг щодня",
+            timing=SupplementTiming.EVENING,
+            duration="короткострокково",
+            cost_usd=2.0,  # 85/42
+            purpose="Розрідження крові",
+            contraindications=["виразки", "кровотечі"],
+            interactions=["посилює антикоагулянти"]
+        )
+        
+        return supplements
+    
+    def get_cycle_support_plan(self, cycle_type: str, user_restrictions: List[str], budget_usd: int) -> Dict:
+        """Генерація плану підтримки для курсу"""
+        
+        plan = {
+            "essential": [],
+            "recommended": [], 
+            "optional": [],
+            "total_cost": 0
+        }
+        
+        # Базові для всіх курсів
+        essential_supplements = ["nac", "omega_3", "magnesium", "zinc"]
+        
+        # Додаткові в залежності від типу курсу
+        if "oral" in cycle_type.lower():
+            essential_supplements.extend(["milk_thistle", "tudca"])
+        
+        if "dht" in cycle_type.lower():
+            essential_supplements.extend(["saw_palmetto", "pygeum_africanum"])
+        
+        # КОРЕКТИВИ: При гіпертонії
+        if "hypertension" in user_restrictions:
+            essential_supplements.extend(["magnesium", "tadalafil"])
+        
+        # Розподіл за бюджетом
+        current_cost = 0
+        
+        for supp_id in essential_supplements:
+            if supp_id in self.supplements:
+                supp = self.supplements[supp_id]
+                if current_cost + supp.cost_usd <= budget_usd * 0.6:  # 60% на обов'язкові
+                    plan["essential"].append(supp)
+                    current_cost += supp.cost_usd
+        
+        # Рекомендовані
+        recommended_supplements = ["coq10", "vitamin_d", "berberine", "psyllium_fiber"]
+        
+        for supp_id in recommended_supplements:
+            if supp_id in self.supplements:
+                supp = self.supplements[supp_id]
+                if current_cost + supp.cost_usd <= budget_usd * 0.9:  # 90% на рекомендовані
+                    plan["recommended"].append(supp)
+                    current_cost += supp.cost_usd
+        
+        plan["total_cost"] = current_cost
+        
+        return plan
+    
+    def get_pct_support_plan(self, cycle_duration_weeks: int, budget_usd: int) -> Dict:
+        """План підтримки для ПКТ"""
+        
+        plan = {
+            "core": [],
+            "recovery": [],
+            "optional": [],
+            "total_cost": 0
+        }
+        
+        # Базові для ПКТ
+        core_supplements = ["daa", "zinc_pct", "vitamin_d", "magnesium_glycinate"]
+        
+        # Підтримка м'язів
+        recovery_supplements = ["creatine_pct", "glutamine", "vitamin_c"]
+        
+        # За тривалістю курсу
+        if cycle_duration_weeks >= 12:
+            core_supplements.append("hmb")
+        
+        current_cost = 0
+        
+        for supp_id in core_supplements:
+            if supp_id in self.supplements:
+                supp = self.supplements[supp_id]
+                plan["core"].append(supp)
+                current_cost += supp.cost_usd
+        
+        for supp_id in recovery_supplements:
+            if supp_id in self.supplements:
+                supp = self.supplements[supp_id]
+                if current_cost + supp.cost_usd <= budget_usd:
+                    plan["recovery"].append(supp)
+                    current_cost += supp.cost_usd
+        
+        plan["total_cost"] = current_cost
+        
+        return plan
+    
+    def get_supplement_by_purpose(self, purpose: str) -> List[Supplement]:
+        """Пошук БАДів за призначенням"""
+        
+        matching_supplements = []
+        
+        for supp in self.supplements.values():
+            if purpose.lower() in supp.purpose.lower():
+                matching_supplements.append(supp)
+        
+        return matching_supplements
+    
+    def check_supplement_interactions(self, supplement_list: List[str]) -> Dict:
+        """Перевірка взаємодій між БАДами"""
+        
+        interactions = []
+        warnings = []
+        
+        for supp_id in supplement_list:
+            supp = self.supplements.get(supp_id)
+            if not supp:
+                continue
+            
+            if supp.interactions:
+                for interaction in supp.interactions:
+                    interactions.append(f"{supp.name}: {interaction}")
+            
+            if supp.contraindications:
+                for contra in supp.contraindications:
+                    warnings.append(f"{supp.name}: {contra}")
+        
+        return {
+            "interactions": interactions,
+            "warnings": warnings,
+            "safe": len(interactions) == 0 and len(warnings) == 0
+        }
+    
+    def calculate_monthly_supplement_cost(self, supplement_plan: Dict) -> float:
+        """Розрахунок місячної вартості БАДів"""
+        
+        monthly_cost = 0
+        
+        for category in supplement_plan.values():
+            if isinstance(category, list):
+                for supp in category:
+                    if isinstance(supp, Supplement):
+                        # Приблизний розрахунок на місяць
+                        monthly_cost += supp.cost_usd / 2  # Припускаємо упаковка на 2 місяці
+        
+        return round(monthly_cost, 2)
