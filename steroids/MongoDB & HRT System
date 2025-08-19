@@ -1,0 +1,635 @@
+# models/steroid_cycle.py
+"""
+PantelMed AI - MongoDB моделі для стероїдної системи
+"""
+
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+from dataclasses import dataclass, asdict
+from enum import Enum
+import json
+from bson import ObjectId
+
+# Припускаємо використання PyMongo або Motor
+from pymongo import MongoClient
+from pymongo.collection import Collection
+
+class CycleStatus(Enum):
+    PLANNING = "planning"
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    INTERRUPTED = "interrupted"
+
+class MongoBaseModel:
+    """Базова модель для MongoDB"""
+    
+    def __init__(self, db_name: str = "pantelmed_ai"):
+        self.client = MongoClient("mongodb://localhost:27017/")
+        self.db = self.client[db_name]
+    
+    def to_dict(self) -> Dict:
+        """Конвертація в словник для MongoDB"""
+        result = {}
+        for key, value in self.__dict__.items():
+            if key.startswith('_') or key in ['client', 'db']:
+                continue
+            if isinstance(value, datetime):
+                result[key] = value
+            elif isinstance(value, Enum):
+                result[key] = value.value
+            elif isinstance(value, ObjectId):
+                result[key] = str(value)
+            else:
+                result[key] = value
+        return result
+    
+    def save(self) -> str:
+        """Збереження в MongoDB"""
+        collection = self.db[self._collection_name]
+        data = self.to_dict()
+        
+        if hasattr(self, '_id') and self._id:
+            # Оновлення
+            collection.update_one({"_id": ObjectId(self._id)}, {"$set": data})
+            return str(self._id)
+        else:
+            # Створення
+            result = collection.insert_one(data)
+            self._id = str(result.inserted_id)
+            return self._id
+
+# ===========================================
+# КОРИСТУВАЧ ТА ПРОФІЛЬ
+# ===========================================
+
+class SteroidUser(MongoBaseModel):
+    """Профіль користувача стероїдної системи"""
+    
+    _collection_name = "steroid_users"
+    
+    def __init__(self, 
+                 user_id: str,
+                 telegram_id: Optional[str] = None,
+                 questionnaire_completed: bool = False,
+                 **kwargs):
+        super().__init__()
+        self.user_id = user_id
+        self.telegram_id = telegram_id
+        self.questionnaire_completed = questionnaire_completed
+        
+        # Дані з анкети
+        self.age: Optional[int] = kwargs.get('age')
+        self.weight: Optional[int] = kwargs.get('weight') 
+        self.height: Optional[int] = kwargs.get('height')
+        self.experience_level: Optional[str] = kwargs.get('experience_level')
+        self.cycle_count: Optional[int] = kwargs.get('cycle_count')
+        
+        # Медичні обмеження
+        self.alopecia_status: Optional[str] = kwargs.get('alopecia_status')
+        self.prostate_status: Optional[str] = kwargs.get('prostate_status')
+        self.liver_status: Optional[str] = kwargs.get('liver_status')
+        self.joint_status: Optional[str] = kwargs.get('joint_status')
+        self.blood_pressure_status: Optional[str] = kwargs.get('blood_pressure_status')
+        self.atherosclerosis_risk: Optional[str] = kwargs.get('atherosclerosis_risk')
+        
+        # Преференції
+        self.injection_readiness: Optional[str] = kwargs.get('injection_readiness')
+        self.lab_monitoring_capability: Optional[str] = kwargs.get('lab_monitoring_capability')
+        self.budget_category: Optional[str] = kwargs.get('budget_category')
+        self.max_budget_usd: Optional[int] = kwargs.get('max_budget_usd')
+        
+        # Цілі
+        self.main_goal: Optional[str] = kwargs.get('main_goal')
+        self.sport_type: Optional[str] = kwargs.get('sport_type')
+        
+        # Метадані
+        self.created_at: datetime = kwargs.get('created_at', datetime.utcnow())
+        self.updated_at: datetime = kwargs.get('updated_at', datetime.utcnow())
+        self._id: Optional[str] = kwargs.get('_id')
+    
+    @classmethod
+    def find_by_user_id(cls, user_id: str) -> Optional['SteroidUser']:
+        """Пошук користувача за ID"""
+        instance = cls(user_id="temp")
+        collection = instance.db[cls._collection_name]
+        doc = collection.find_one({"user_id": user_id})
+        
+        if doc:
+            doc['_id'] = str(doc['_id'])
+            return cls(**doc)
+        return None
+    
+    def update_from_questionnaire(self, answers: Dict):
+        """Оновлення профілю з відповідей анкети"""
+        
+        # Мапінг відповідей анкети на поля профілю
+        mapping = {
+            'age': 'age',
+            'weight': 'weight',
+            'height': 'height',
+            'cycle_count': 'cycle_count',
+            'alopecia': 'alopecia_status',
+            'prostate': 'prostate_status',
+            'liver': 'liver_status',
+            'joints': 'joint_status',
+            'blood_pressure': 'blood_pressure_status',
+            'atherosclerosis': 'atherosclerosis_risk',
+            'injection_readiness': 'injection_readiness',
+            'lab_monitoring': 'lab_monitoring_capability',
+            'budget': 'budget_category',
+            'main_goal': 'main_goal',
+            'sport_type': 'sport_type'
+        }
+        
+        for question_key, profile_field in mapping.items():
+            if question_key in answers:
+                setattr(self, profile_field, answers[question_key])
+        
+        # Визначення рівня досвіду
+        if self.cycle_count is not None:
+            if self.cycle_count == 0:
+                self.experience_level = "beginner"
+            elif self.cycle_count <= 2:
+                self.experience_level = "intermediate"
+            elif self.cycle_count <= 5:
+                self.experience_level = "advanced"
+            else:
+                self.experience_level = "expert"
+        
+        self.questionnaire_completed = True
+        self.updated_at = datetime.utcnow()
+
+# ===========================================
+# РЕЗУЛЬТАТИ АНКЕТУВАННЯ
+# ===========================================
+
+class QuestionnaireResult(MongoBaseModel):
+    """Результати анкетування"""
+    
+    _collection_name = "questionnaire_results"
+    
+    def __init__(self,
+                 user_id: str,
+                 answers: Dict,
+                 recommendations: Dict,
+                 **kwargs):
+        super().__init__()
+        self.user_id = user_id
+        self.answers = answers
+        self.recommendations = recommendations
+        self.ai_score = kwargs.get('ai_score', 0)
+        self.safety_level = kwargs.get('safety_level', 'medium')
+        self.restrictions = kwargs.get('restrictions', [])
+        self.warnings = kwargs.get('warnings', [])
+        self.created_at = kwargs.get('created_at', datetime.utcnow())
+        self._id = kwargs.get('_id')
+    
+    @classmethod
+    def find_latest(cls, user_id: str) -> Optional['QuestionnaireResult']:
+        """Останні результати анкетування"""
+        instance = cls(user_id="temp", answers={}, recommendations={})
+        collection = instance.db[cls._collection_name]
+        doc = collection.find_one(
+            {"user_id": user_id},
+            sort=[("created_at", -1)]
+        )
+        
+        if doc:
+            doc['_id'] = str(doc['_id'])
+            return cls(**doc)
+        return None
+
+# ===========================================
+# КУРСИ СТЕРОЇДІВ
+# ===========================================
+
+class SteroidCycle(MongoBaseModel):
+    """Курс стероїдів"""
+    
+    _collection_name = "steroid_cycles"
+    
+    def __init__(self,
+                 user_id: str,
+                 cycle_template_id: str,
+                 status: CycleStatus = CycleStatus.PLANNING,
+                 **kwargs):
+        super().__init__()
+        self.user_id = user_id
+        self.cycle_template_id = cycle_template_id
+        self.status = status
+        
+        # Дати
+        self.start_date: Optional[datetime] = kwargs.get('start_date')
+        self.planned_end_date: Optional[datetime] = kwargs.get('planned_end_date')
+        self.actual_end_date: Optional[datetime] = kwargs.get('actual_end_date')
+        self.completed_at: Optional[datetime] = kwargs.get('completed_at')
+        
+        # Персоналізація
+        self.personalized_adjustments: Dict = kwargs.get('personalized_adjustments', {})
+        self.dosage_adjustments: Dict = kwargs.get('dosage_adjustments', {})
+        self.compound_substitutions: Dict = kwargs.get('compound_substitutions', {})
+        
+        # Результати
+        self.results: Optional[Dict] = kwargs.get('results')
+        self.satisfaction_rating: Optional[int] = kwargs.get('satisfaction_rating')
+        self.side_effects: List[str] = kwargs.get('side_effects', [])
+        self.weight_gain_kg: Optional[float] = kwargs.get('weight_gain_kg')
+        self.strength_increase_percent: Optional[float] = kwargs.get('strength_increase_percent')
+        
+        # AI аналіз
+        self.ai_recommendations: List[str] = kwargs.get('ai_recommendations', [])
+        self.progression_analysis: Optional[Dict] = kwargs.get('progression_analysis')
+        
+        # Метадані
+        self.created_at: datetime = kwargs.get('created_at', datetime.utcnow())
+        self.updated_at: datetime = kwargs.get('updated_at', datetime.utcnow())
+        self._id: Optional[str] = kwargs.get('_id')
+    
+    @classmethod
+    def find_active_cycle(cls, user_id: str, cycle_id: Optional[str] = None) -> Optional['SteroidCycle']:
+        """Пошук активного курсу"""
+        instance = cls(user_id="temp", cycle_template_id="temp")
+        collection = instance.db[cls._collection_name]
+        
+        query = {"user_id": user_id, "status": CycleStatus.ACTIVE.value}
+        if cycle_id:
+            query["_id"] = ObjectId(cycle_id)
+        
+        doc = collection.find_one(query)
+        
+        if doc:
+            doc['_id'] = str(doc['_id'])
+            return cls(**doc)
+        return None
+    
+    @classmethod
+    def find_active_cycles(cls, user_id: str) -> List['SteroidCycle']:
+        """Всі активні курси користувача"""
+        instance = cls(user_id="temp", cycle_template_id="temp")
+        collection = instance.db[cls._collection_name]
+        
+        docs = collection.find({"user_id": user_id, "status": CycleStatus.ACTIVE.value})
+        
+        cycles = []
+        for doc in docs:
+            doc['_id'] = str(doc['_id'])
+            cycles.append(cls(**doc))
+        
+        return cycles
+    
+    @classmethod
+    def count_user_cycles(cls, user_id: str) -> int:
+        """Кількість курсів користувача"""
+        instance = cls(user_id="temp", cycle_template_id="temp")
+        collection = instance.db[cls._collection_name]
+        return collection.count_documents({"user_id": user_id})
+    
+    def calculate_duration_days(self) -> Optional[int]:
+        """Розрахунок тривалості курсу в днях"""
+        if self.start_date and self.actual_end_date:
+            return (self.actual_end_date - self.start_date).days
+        elif self.start_date and self.planned_end_date:
+            return (self.planned_end_date - self.start_date).days
+        return None
+    
+    def is_due_for_monitoring(self) -> bool:
+        """Чи потрібен моніторинг аналізів"""
+        if not self.start_date or self.status != CycleStatus.ACTIVE:
+            return False
+        
+        days_since_start = (datetime.utcnow() - self.start_date).days
+        
+        # Перший аналіз на 10 день
+        if days_since_start >= 10:
+            # Перевірити чи був аналіз останні 2 тижні
+            return self._check_last_monitoring_date()
+        
+        return False
+    
+    def _check_last_monitoring_date(self) -> bool:
+        """Перевірка дати останнього моніторингу"""
+        # Логіка перевірки останніх аналізів
+        return True  # Спрощена реалізація
+
+# ===========================================
+# ПРОГРЕС КУРСУ
+# ===========================================
+
+class CycleProgress(MongoBaseModel):
+    """Відстеження прогресу курсу"""
+    
+    _collection_name = "cycle_progress"
+    
+    def __init__(self,
+                 cycle_id: str,
+                 user_id: str,
+                 **kwargs):
+        super().__init__()
+        self.cycle_id = cycle_id
+        self.user_id = user_id
+        
+        # Прогрес
+        self.week_number: Optional[int] = kwargs.get('week_number')
+        self.weight_kg: Optional[float] = kwargs.get('weight_kg')
+        self.body_fat_percent: Optional[float] = kwargs.get('body_fat_percent')
+        self.muscle_gain_kg: Optional[float] = kwargs.get('muscle_gain_kg')
+        
+        # Самопочуття
+        self.energy_level: Optional[int] = kwargs.get('energy_level')  # 1-10
+        self.mood_rating: Optional[int] = kwargs.get('mood_rating')  # 1-10
+        self.libido_rating: Optional[int] = kwargs.get('libido_rating')  # 1-10
+        self.sleep_quality: Optional[int] = kwargs.get('sleep_quality')  # 1-10
+        
+        # Побічні ефекти
+        self.side_effects: List[str] = kwargs.get('side_effects', [])
+        self.acne_severity: Optional[int] = kwargs.get('acne_severity', 0)  # 0-10
+        self.hair_loss_rating: Optional[int] = kwargs.get('hair_loss_rating', 0)  # 0-10
+        self.water_retention: Optional[int] = kwargs.get('water_retention', 0)  # 0-10
+        
+        # Тренування
+        self.strength_increase_percent: Optional[float] = kwargs.get('strength_increase_percent')
+        self.workout_performance: Optional[int] = kwargs.get('workout_performance')  # 1-10
+        
+        # Задоволеність
+        self.satisfaction_rating: Optional[int] = kwargs.get('satisfaction_rating')  # 1-10
+        self.would_repeat_cycle: Optional[bool] = kwargs.get('would_repeat_cycle')
+        
+        # AI аналіз
+        self.ai_analysis: Optional[Dict] = kwargs.get('ai_analysis')
+        self.ai_recommendations: List[str] = kwargs.get('ai_recommendations', [])
+        
+        # Метадані
+        self.recorded_at: datetime = kwargs.get('recorded_at', datetime.utcnow())
+        self._id: Optional[str] = kwargs.get('_id')
+    
+    @classmethod
+    def find_cycle_progress(cls, cycle_id: str) -> List['CycleProgress']:
+        """Весь прогрес курсу"""
+        instance = cls(cycle_id="temp", user_id="temp")
+        collection = instance.db[cls._collection_name]
+        
+        docs = collection.find(
+            {"cycle_id": cycle_id},
+            sort=[("week_number", 1)]
+        )
+        
+        progress_list = []
+        for doc in docs:
+            doc['_id'] = str(doc['_id'])
+            progress_list.append(cls(**doc))
+        
+        return progress_list
+
+# ===========================================
+# АНАЛІЗИ ТА МОНІТОРИНГ
+# ===========================================
+
+class LabResult(MongoBaseModel):
+    """Результати аналізів"""
+    
+    _collection_name = "lab_results"
+    
+    def __init__(self,
+                 user_id: str,
+                 cycle_id: Optional[str] = None,
+                 **kwargs):
+        super().__init__()
+        self.user_id = user_id
+        self.cycle_id = cycle_id
+        
+        # Гормони
+        self.total_testosterone: Optional[float] = kwargs.get('total_testosterone')
+        self.free_testosterone: Optional[float] = kwargs.get('free_testosterone')
+        self.estradiol: Optional[float] = kwargs.get('estradiol')
+        self.prolactin: Optional[float] = kwargs.get('prolactin')
+        self.lh: Optional[float] = kwargs.get('lh')
+        self.fsh: Optional[float] = kwargs.get('fsh')
+        self.shbg: Optional[float] = kwargs.get('shbg')
+        
+        # Печінка
+        self.alt: Optional[float] = kwargs.get('alt')
+        self.ast: Optional[float] = kwargs.get('ast')
+        self.bilirubin: Optional[float] = kwargs.get('bilirubin')
+        self.alkaline_phosphatase: Optional[float] = kwargs.get('alkaline_phosphatase')
+        
+        # Кров
+        self.hemoglobin: Optional[float] = kwargs.get('hemoglobin')
+        self.hematocrit: Optional[float] = kwargs.get('hematocrit')
+        self.rbc: Optional[float] = kwargs.get('rbc')
+        self.wbc: Optional[float] = kwargs.get('wbc')
+        self.platelets: Optional[float] = kwargs.get('platelets')
+        
+        # Ліпіди
+        self.total_cholesterol: Optional[float] = kwargs.get('total_cholesterol')
+        self.ldl_cholesterol: Optional[float] = kwargs.get('ldl_cholesterol')
+        self.hdl_cholesterol: Optional[float] = kwargs.get('hdl_cholesterol')
+        self.vldl_cholesterol: Optional[float] = kwargs.get('vldl_cholesterol')
+        self.triglycerides: Optional[float] = kwargs.get('triglycerides')
+        
+        # Інше
+        self.psa: Optional[float] = kwargs.get('psa')
+        self.creatinine: Optional[float] = kwargs.get('creatinine')
+        self.glucose: Optional[float] = kwargs.get('glucose')
+        
+        # AI аналіз
+        self.ai_interpretation: Optional[str] = kwargs.get('ai_interpretation')
+        self.risk_flags: List[str] = kwargs.get('risk_flags', [])
+        self.recommendations: List[str] = kwargs.get('recommendations', [])
+        
+        # Метадані
+        self.test_date: datetime = kwargs.get('test_date', datetime.utcnow())
+        self.lab_name: Optional[str] = kwargs.get('lab_name')
+        self.created_at: datetime = kwargs.get('created_at', datetime.utcnow())
+        self._id: Optional[str] = kwargs.get('_id')
+
+# ===========================================
+# ГЗТ (HRT) СИСТЕМА
+# ===========================================
+
+class HRTProtocol(MongoBaseModel):
+    """Протокол гормонозамісної терапії"""
+    
+    _collection_name = "hrt_protocols"
+    
+    def __init__(self,
+                 user_id: str,
+                 protocol_type: str = "testosterone_replacement",
+                 **kwargs):
+        super().__init__()
+        self.user_id = user_id
+        self.protocol_type = protocol_type
+        
+        # Протокол
+        self.testosterone_compound: Optional[str] = kwargs.get('testosterone_compound')  # cypionate, enanthate
+        self.testosterone_dose_mg: Optional[float] = kwargs.get('testosterone_dose_mg')
+        self.injection_frequency: Optional[str] = kwargs.get('injection_frequency')  # weekly, twice_weekly
+        
+        # Додаткові препарати
+        self.ai_inhibitor: Optional[str] = kwargs.get('ai_inhibitor')  # anastrozole, exemestane
+        self.ai_dose: Optional[str] = kwargs.get('ai_dose')
+        self.hcg_dose: Optional[int] = kwargs.get('hcg_dose')
+        self.hcg_frequency: Optional[str] = kwargs.get('hcg_frequency')
+        
+        # Цілі та результати
+        self.target_testosterone_level: Optional[float] = kwargs.get('target_testosterone_level', 25.0)  # nmol/L
+        self.target_estradiol_level: Optional[float] = kwargs.get('target_estradiol_level', 110.0)  # pmol/L
+        
+        # Стан
+        self.status: str = kwargs.get('status', 'planning')  # planning, active, paused, discontinued
+        self.start_date: Optional[datetime] = kwargs.get('start_date')
+        self.next_review_date: Optional[datetime] = kwargs.get('next_review_date')
+        
+        # Метадані
+        self.created_at: datetime = kwargs.get('created_at', datetime.utcnow())
+        self.updated_at: datetime = kwargs.get('updated_at', datetime.utcnow())
+        self._id: Optional[str] = kwargs.get('_id')
+
+# ===========================================
+# AI ДІАЛОГИ
+# ===========================================
+
+class AIConversation(MongoBaseModel):
+    """AI діалоги з користувачами"""
+    
+    _collection_name = "ai_conversations"
+    
+    def __init__(self,
+                 user_id: str,
+                 user_message: str,
+                 ai_response: Dict,
+                 **kwargs):
+        super().__init__()
+        self.user_id = user_id
+        self.user_message = user_message
+        self.ai_response = ai_response
+        self.context_type = kwargs.get('context_type', 'general')  # general, cycle_planning, progress_tracking
+        self.session_id = kwargs.get('session_id')
+        self.intent = kwargs.get('intent')
+        self.timestamp = kwargs.get('timestamp', datetime.utcnow())
+        self._id = kwargs.get('_id')
+
+# ===========================================
+# ДОПОМІЖНІ ФУНКЦІЇ
+# ===========================================
+
+def get_user_experience_level(user_id: str) -> str:
+    """Визначення рівня досвіду користувача"""
+    
+    cycle_count = SteroidCycle.count_user_cycles(user_id)
+    
+    if cycle_count == 0:
+        return "beginner"
+    elif cycle_count <= 2:
+        return "intermediate"
+    elif cycle_count <= 5:
+        return "advanced"
+    else:
+        return "expert"
+
+def calculate_user_safety_score(user_id: str) -> int:
+    """Розрахунок скору безпеки користувача"""
+    
+    user = SteroidUser.find_by_user_id(user_id)
+    if not user:
+        return 0
+    
+    score = 50  # Базовий скор
+    
+    # Вік
+    if user.age and user.age < 25:
+        score -= 10
+    elif user.age and user.age > 40:
+        score -= 5
+    
+    # Медичні обмеження
+    if user.alopecia_status == "active":
+        score -= 20
+    if user.prostate_status == "diagnosed":
+        score -= 20
+    if user.blood_pressure_status == "hypertension":
+        score -= 15
+    if user.atherosclerosis_risk == "suspected":
+        score -= 25
+    
+    # Готовність до моніторингу
+    if user.lab_monitoring_capability == "regular":
+        score += 10
+    elif user.lab_monitoring_capability == "difficult":
+        score -= 10
+    
+    return max(0, min(100, score))
+
+def get_user_progression_path(user_id: str) -> List[str]:
+    """Шлях прогресії користувача"""
+    
+    completed_cycles = SteroidCycle.find_completed_cycles(user_id)
+    
+    if not completed_cycles:
+        return ["light_beginner_8_10w"]
+    
+    last_cycle = completed_cycles[-1]
+    satisfaction = last_cycle.satisfaction_rating or 5
+    
+    if satisfaction >= 8:
+        return ["medium_light_10w", "hard_cycle_12w"]
+    elif satisfaction >= 6:
+        return ["similar_optimized"]
+    else:
+        return ["step_back_optimize"]
+
+# ===========================================
+# ГЗТ ПРОТОКОЛИ ТА РЕКОМЕНДАЦІЇ
+# ===========================================
+
+class HRTRecommendationEngine:
+    """Система рекомендацій для ГЗТ"""
+    
+    @staticmethod
+    def recommend_hrt_protocol(user_profile: SteroidUser, latest_labs: Optional[LabResult] = None) -> Dict:
+        """Рекомендація протоколу ГЗТ"""
+        
+        recommendations = {
+            "suitable_for_hrt": False,
+            "protocol": None,
+            "reasoning": [],
+            "monitoring": [],
+            "contraindications": []
+        }
+        
+        # Базові критерії для ГЗТ
+        if user_profile.age and user_profile.age >= 30:
+            recommendations["suitable_for_hrt"] = True
+            recommendations["reasoning"].append("Вік підходить для ГЗТ")
+        
+        # Аналіз аналізів
+        if latest_labs and latest_labs.total_testosterone:
+            if latest_labs.total_testosterone < 12.0:  # nmol/L
+                recommendations["reasoning"].append("Низький рівень тестостерону")
+                recommendations["suitable_for_hrt"] = True
+        
+        # Медичні обмеження
+        if user_profile.prostate_status == "diagnosed":
+            recommendations["contraindications"].append("Проблеми з простатою")
+            recommendations["suitable_for_hrt"] = False
+        
+        if user_profile.atherosclerosis_risk == "suspected":
+            recommendations["contraindications"].append("Підозра на атеросклероз")
+        
+        # Рекомендований протокол
+        if recommendations["suitable_for_hrt"]:
+            if user_profile.injection_readiness in ["twice_weekly", "comfortable"]:
+                recommendations["protocol"] = {
+                    "type": "testosterone_cypionate_enanthate",
+                    "dose": "125-150мг щотижня",
+                    "frequency": "2 ін'єкції на тиждень",
+                    "additional": ["AI за потребою", "моніторинг кожні 3 місяці"]
+                }
+            else:
+                recommendations["protocol"] = {
+                    "type": "testosterone_undecanoate",
+                    "dose": "1000мг кожні 10-14 тижнів", 
+                    "frequency": "рідкі ін'єкції",
+                    "note": "Менш оптимальний варіант"
+                }
+        
+        return recommendations
