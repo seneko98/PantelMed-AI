@@ -1,0 +1,579 @@
+# routes/cycles_catalog.py
+"""
+PantelMed AI - Каталог і перегляд всіх курсів
+Користувач може переглядати всі курси після оплати підписки
+"""
+
+from flask import Blueprint, request, jsonify
+from flask_cors import cross_origin
+from typing import Dict, List, Optional
+import json
+
+from assistant.steroids.cycle_matcher import CycleMatcher
+from data.steroids.cycles import CYCLES_DATA, calculate_full_cycle_cost
+from models.user import User
+from utils.auth import require_auth, get_current_user
+from utils.payment import verify_crypto_payment
+
+# Створення Blueprint для каталогу
+catalog_bp = Blueprint('cycles_catalog', __name__, url_prefix='/api/cycles')
+
+# ===========================================
+# КАТАЛОГ ВСІХ КУРСІВ
+# ===========================================
+
+@catalog_bp.route('/catalog', methods=['GET'])
+@require_auth
+@cross_origin()
+def get_all_cycles_catalog():
+    """Повний каталог всіх доступних курсів"""
+    
+    user = get_current_user()
+    
+    # Перевірка оплати
+    payment_status = verify_crypto_payment(user.id)
+    if not payment_status['paid']:
+        return jsonify({
+            'status': 'payment_required',
+            'message': 'Доступ до повного каталогу курсів після оплати',
+            'free_preview': get_free_cycles_preview()
+        }), 402
+    
+    # Отримання профілю користувача для персоналізації
+    user_profile = get_user_profile(user.id)
+    
+    catalog = {
+        'short_cycles': format_cycles_category('short_cycles', user_profile),
+        'medium_cycles': format_cycles_category('medium_cycles', user_profile), 
+        'long_cycles': format_cycles_category('long_cycles', user_profile),
+        'specialized_cycles': format_cycles_category('specialized_cycles', user_profile),
+        'total_cycles': get_total_cycles_count(),
+        'user_recommendations': get_user_ai_recommendations(user.id)
+    }
+    
+    return jsonify({
+        'status': 'success',
+        'catalog': catalog,
+        'filters_available': get_available_filters(),
+        'sorting_options': get_sorting_options()
+    })
+
+@catalog_bp.route('/browse', methods=['GET'])
+@require_auth  
+@cross_origin()
+def browse_cycles_with_filters():
+    """Перегляд курсів з фільтрами та сортуванням"""
+    
+    user = get_current_user()
+    
+    # Перевірка оплати
+    payment_status = verify_crypto_payment(user.id)
+    if not payment_status['paid']:
+        return jsonify({'status': 'payment_required'}), 402
+    
+    # Параметри фільтрації
+    filters = {
+        'duration': request.args.get('duration'),  # short, medium, long
+        'goal': request.args.get('goal'),  # mass_gain, cutting, recomposition
+        'experience_level': request.args.get('experience'),  # beginner, intermediate, advanced
+        'budget_max': request.args.get('budget_max', type=int),
+        'injection_preference': request.args.get('injections'),  # orals_only, minimal, normal
+        'compounds': request.args.getlist('compounds')  # testosterone, masteron, etc
+    }
+    
+    # Параметри сортування
+    sort_by = request.args.get('sort_by', 'recommended')  # recommended, price_low, price_high, duration
+    
+    # Отримання профілю для персоналізації
+    user_profile = get_user_profile(user.id)
+    
+    # Фільтрування та сортування
+    filtered_cycles = filter_and_sort_cycles(filters, sort_by, user_profile)
+    
+    return jsonify({
+        'status': 'success',
+        'cycles': filtered_cycles,
+        'filters_applied': filters,
+        'sort_by': sort_by,
+        'total_found': len(filtered_cycles)
+    })
+
+@catalog_bp.route('/compare', methods=['POST'])
+@require_auth
+@cross_origin()
+def compare_cycles():
+    """Порівняння кількох курсів"""
+    
+    data = request.get_json()
+    cycle_ids = data.get('cycle_ids', [])
+    
+    if len(cycle_ids) > 4:
+        return jsonify({'error': 'Максимум 4 курси для порівняння'}), 400
+    
+    user = get_current_user()
+    payment_status = verify_crypto_payment(user.id)
+    if not payment_status['paid']:
+        return jsonify({'status': 'payment_required'}), 402
+    
+    user_profile = get_user_profile(user.id)
+    
+    comparison = {
+        'cycles': [],
+        'comparison_matrix': {},
+        'user_suitability': {},
+        'recommendations': {}
+    }
+    
+    for cycle_id in cycle_ids:
+        cycle_data = get_cycle_by_id(cycle_id)
+        if cycle_data:
+            # Детальна інформація про курс
+            cycle_details = enrich_cycle_data(cycle_data, user_profile)
+            comparison['cycles'].append(cycle_details)
+            
+            # Аналіз сумісності з користувачем
+            suitability = analyze_cycle_suitability(cycle_data, user_profile)
+            comparison['user_suitability'][cycle_id] = suitability
+    
+    # Порівняльна матриця
+    comparison['comparison_matrix'] = build_comparison_matrix(comparison['cycles'])
+    
+    # AI рекомендації щодо вибору
+    comparison['recommendations'] = generate_comparison_recommendations(
+        comparison['cycles'], 
+        user_profile
+    )
+    
+    return jsonify({
+        'status': 'success',
+        'comparison': comparison
+    })
+
+# ===========================================
+# ДЕТАЛЬНА ІНФОРМАЦІЯ ПРО КУРС
+# ===========================================
+
+@catalog_bp.route('/details/<cycle_id>', methods=['GET'])
+@require_auth
+@cross_origin()
+def get_detailed_cycle_info(cycle_id: str):
+    """Повна детальна інформація про конкретний курс"""
+    
+    user = get_current_user()
+    payment_status = verify_crypto_payment(user.id)
+    if not payment_status['paid']:
+        return jsonify({'status': 'payment_required'}), 402
+    
+    cycle_data = get_cycle_by_id(cycle_id)
+    if not cycle_data:
+        return jsonify({'error': 'Курс не знайдено'}), 404
+    
+    user_profile = get_user_profile(user.id)
+    
+    # Детальна інформація
+    detailed_info = {
+        'basic_info': cycle_data,
+        'personalized_for_user': personalize_cycle_for_user(cycle_data, user_profile),
+        'cost_breakdown': calculate_detailed_cost_breakdown(cycle_id, user_profile),
+        'timeline': generate_cycle_timeline(cycle_data),
+        'compounds_info': get_compounds_detailed_info(cycle_data),
+        'support_supplements': get_cycle_support_supplements(cycle_data, user_profile),
+        'monitoring_schedule': generate_monitoring_schedule_detailed(cycle_data, user_profile),
+        'expected_results': calculate_expected_results(cycle_data, user_profile),
+        'safety_analysis': perform_safety_analysis(cycle_data, user_profile),
+        'alternatives': find_similar_cycles(cycle_id, user_profile),
+        'user_reviews': get_cycle_user_reviews(cycle_id),  # Якщо є система відгуків
+        'expert_notes': get_expert_notes_for_cycle(cycle_id)
+    }
+    
+    return jsonify({
+        'status': 'success',
+        'cycle_details': detailed_info
+    })
+
+@catalog_bp.route('/alternatives/<cycle_id>', methods=['GET'])
+@require_auth
+@cross_origin()
+def get_cycle_alternatives(cycle_id: str):
+    """Альтернативні курси до обраного"""
+    
+    user = get_current_user()
+    payment_status = verify_crypto_payment(user.id)
+    if not payment_status['paid']:
+        return jsonify({'status': 'payment_required'}), 402
+    
+    original_cycle = get_cycle_by_id(cycle_id)
+    if not original_cycle:
+        return jsonify({'error': 'Курс не знайдено'}), 404
+    
+    user_profile = get_user_profile(user.id)
+    
+    alternatives = {
+        'lighter_alternatives': find_lighter_alternatives(original_cycle, user_profile),
+        'stronger_alternatives': find_stronger_alternatives(original_cycle, user_profile),
+        'similar_duration': find_similar_duration_alternatives(original_cycle, user_profile),
+        'same_goal_different_approach': find_same_goal_alternatives(original_cycle, user_profile),
+        'budget_alternatives': find_budget_alternatives(original_cycle, user_profile)
+    }
+    
+    return jsonify({
+        'status': 'success',
+        'original_cycle': original_cycle,
+        'alternatives': alternatives,
+        'ai_recommendation': recommend_best_alternative(alternatives, user_profile)
+    })
+
+# ===========================================
+# ПОШУК ТА ФІЛЬТРАЦІЯ
+# ===========================================
+
+@catalog_bp.route('/search', methods=['GET'])
+@require_auth
+@cross_origin()
+def search_cycles():
+    """Пошук курсів за ключовими словами"""
+    
+    user = get_current_user()
+    payment_status = verify_crypto_payment(user.id)
+    if not payment_status['paid']:
+        return jsonify({'status': 'payment_required'}), 402
+    
+    query = request.args.get('q', '').lower()
+    category = request.args.get('category')  # compounds, goals, duration
+    
+    if len(query) < 2:
+        return jsonify({'error': 'Мінімум 2 символи для пошуку'}), 400
+    
+    search_results = perform_cycle_search(query, category)
+    
+    return jsonify({
+        'status': 'success',
+        'query': query,
+        'results': search_results,
+        'suggestions': get_search_suggestions(query)
+    })
+
+@catalog_bp.route('/filters', methods=['GET'])
+@require_auth
+@cross_origin()
+def get_filter_options():
+    """Доступні опції для фільтрації"""
+    
+    user = get_current_user()
+    payment_status = verify_crypto_payment(user.id)
+    if not payment_status['paid']:
+        return jsonify({'status': 'payment_required'}), 402
+    
+    user_profile = get_user_profile(user.id)
+    
+    filters = {
+        'duration': [
+            {'value': 'short', 'label': '4 тижні', 'count': count_cycles_by_duration('short')},
+            {'value': 'medium', 'label': '8-12 тижнів', 'count': count_cycles_by_duration('medium')},
+            {'value': 'long', 'label': '14-16 тижнів', 'count': count_cycles_by_duration('long')}
+        ],
+        'goals': [
+            {'value': 'mass_gain', 'label': 'Набір маси', 'count': count_cycles_by_goal('mass_gain')},
+            {'value': 'cutting', 'label': 'Сушка', 'count': count_cycles_by_goal('cutting')},
+            {'value': 'recomposition', 'label': 'Рекомпозиція', 'count': count_cycles_by_goal('recomposition')},
+            {'value': 'strength', 'label': 'Сила', 'count': count_cycles_by_goal('strength')}
+        ],
+        'experience_levels': [
+            {'value': 'beginner', 'label': 'Новачок', 'available': user_profile.experience_level in ['beginner', 'intermediate', 'advanced', 'expert']},
+            {'value': 'intermediate', 'label': 'Середній', 'available': user_profile.experience_level in ['intermediate', 'advanced', 'expert']},
+            {'value': 'advanced', 'label': 'Досвідчений', 'available': user_profile.experience_level in ['advanced', 'expert']},
+            {'value': 'expert', 'label': 'Експерт', 'available': user_profile.experience_level == 'expert'}
+        ],
+        'budget_ranges': [
+            {'value': '0-50', 'label': 'До $50', 'count': count_cycles_by_budget(0, 50)},
+            {'value': '50-120', 'label': '$50-120', 'count': count_cycles_by_budget(50, 120)},
+            {'value': '120-240', 'label': '$120-240', 'count': count_cycles_by_budget(120, 240)},
+            {'value': '240+', 'label': 'Понад $240', 'count': count_cycles_by_budget(240, 999)}
+        ],
+        'compounds': get_available_compounds_filter(),
+        'injection_preferences': [
+            {'value': 'orals_only', 'label': 'Тільки таблетки', 'warning': 'Не рекомендується'},
+            {'value': 'minimal', 'label': 'Мінімум ін\'єкцій'},
+            {'value': 'normal', 'label': 'Нормальні ін\'єкції'},
+            {'value': 'advanced', 'label': 'Складні протоколи'}
+        ]
+    }
+    
+    return jsonify({
+        'status': 'success',
+        'filters': filters,
+        'user_restrictions': get_user_restrictions_summary(user_profile)
+    })
+
+# ===========================================
+# ПЕРСОНАЛІЗАЦІЯ ТА АДАПТАЦІЯ
+# ===========================================
+
+@catalog_bp.route('/personalize/<cycle_id>', methods=['POST'])
+@require_auth
+@cross_origin()
+def personalize_cycle():
+    """Персоналізація курсу під конкретного користувача"""
+    
+    cycle_id = request.view_args['cycle_id']
+    data = request.get_json()
+    
+    user = get_current_user()
+    payment_status = verify_crypto_payment(user.id)
+    if not payment_status['paid']:
+        return jsonify({'status': 'payment_required'}), 402
+    
+    cycle_data = get_cycle_by_id(cycle_id)
+    if not cycle_data:
+        return jsonify({'error': 'Курс не знайдено'}), 404
+    
+    user_profile = get_user_profile(user.id)
+    
+    # Опції персоналізації від користувача
+    customization_options = {
+        'preferred_duration': data.get('duration'),
+        'budget_adjustment': data.get('budget_preference'),
+        'compound_preferences': data.get('compound_preferences', {}),
+        'monitoring_level': data.get('monitoring_level'),
+        'supplement_level': data.get('supplement_level')  # minimal, standard, comprehensive
+    }
+    
+    # AI персоналізація
+    personalized_cycle = generate_personalized_cycle(
+        cycle_data, 
+        user_profile, 
+        customization_options
+    )
+    
+    return jsonify({
+        'status': 'success',
+        'original_cycle': cycle_data,
+        'personalized_cycle': personalized_cycle,
+        'changes_made': personalized_cycle['modifications'],
+        'ai_explanation': personalized_cycle['ai_reasoning']
+    })
+
+# ===========================================
+# ДОПОМІЖНІ ФУНКЦІЇ
+# ===========================================
+
+def get_free_cycles_preview() -> Dict:
+    """Безкоштовний перегляд для не оплачених користувачів"""
+    
+    return {
+        'sample_cycles': [
+            {
+                'name': 'Лайт курс для новачків',
+                'duration': '8 тижнів',
+                'compounds': 'Тестостерон + оральний препарат',
+                'cost_range': '$80-110',
+                'note': 'Повна інформація після оплати'
+            },
+            {
+                'name': 'Курс рекомпозиції',
+                'duration': '10 тижнів', 
+                'compounds': 'Тест + Мастерон + Турінабол',
+                'cost_range': '$155-190',
+                'note': 'Повна інформація після оплати'
+            }
+        ],
+        'total_available': get_total_cycles_count(),
+        'payment_info': 'Доступ до всіх курсів, персоналізації та AI рекомендацій'
+    }
+
+def format_cycles_category(category: str, user_profile) -> List[Dict]:
+    """Форматування категорії курсів для каталогу"""
+    
+    cycles_in_category = CYCLES_DATA.get(category, {})
+    formatted_cycles = []
+    
+    for cycle_id, cycle_data in cycles_in_category.items():
+        if cycle_id == 'meta':
+            continue
+            
+        # Базова інформація
+        cycle_info = {
+            'id': f"{category}_{cycle_id}",
+            'name': cycle_data.get('name', cycle_id),
+            'category': category,
+            'duration_weeks': cycle_data.get('duration_weeks'),
+            'experience_required': cycle_data.get('experience_required', 'beginner'),
+            'goal': cycle_data.get('goal', 'universal'),
+            'compounds_summary': extract_compounds_summary(cycle_data),
+            'cost_estimate': estimate_cycle_cost(cycle_data),
+            'user_suitability': calculate_user_suitability(cycle_data, user_profile),
+            'ai_score': calculate_ai_score_for_user(cycle_data, user_profile),
+            'tags': generate_cycle_tags(cycle_data),
+            'warnings': extract_cycle_warnings(cycle_data),
+            'highlights': extract_cycle_highlights(cycle_data)
+        }
+        
+        formatted_cycles.append(cycle_info)
+    
+    # Сортування за AI скором для користувача
+    formatted_cycles.sort(key=lambda x: x['ai_score'], reverse=True)
+    
+    return formatted_cycles
+
+def filter_and_sort_cycles(filters: Dict, sort_by: str, user_profile) -> List[Dict]:
+    """Фільтрація та сортування курсів"""
+    
+    all_cycles = []
+    
+    # Збір всіх курсів
+    for category in ['short_cycles', 'medium_cycles', 'long_cycles', 'specialized_cycles']:
+        cycles = format_cycles_category(category, user_profile)
+        all_cycles.extend(cycles)
+    
+    # Фільтрація
+    filtered_cycles = all_cycles
+    
+    if filters['duration']:
+        filtered_cycles = [c for c in filtered_cycles if c['category'].startswith(filters['duration'])]
+    
+    if filters['goal']:
+        filtered_cycles = [c for c in filtered_cycles if c['goal'] == filters['goal']]
+    
+    if filters['experience_level']:
+        filtered_cycles = [c for c in filtered_cycles if c['experience_required'] == filters['experience_level']]
+    
+    if filters['budget_max']:
+        filtered_cycles = [c for c in filtered_cycles if c['cost_estimate']['min'] <= filters['budget_max']]
+    
+    if filters['injection_preference']:
+        filtered_cycles = filter_by_injection_preference(filtered_cycles, filters['injection_preference'])
+    
+    # Сортування
+    if sort_by == 'price_low':
+        filtered_cycles.sort(key=lambda x: x['cost_estimate']['min'])
+    elif sort_by == 'price_high':
+        filtered_cycles.sort(key=lambda x: x['cost_estimate']['max'], reverse=True)
+    elif sort_by == 'duration':
+        filtered_cycles.sort(key=lambda x: x['duration_weeks'] or 0)
+    else:  # recommended (default)
+        filtered_cycles.sort(key=lambda x: x['ai_score'], reverse=True)
+    
+    return filtered_cycles
+
+def build_comparison_matrix(cycles: List[Dict]) -> Dict:
+    """Побудова матриці порівняння курсів"""
+    
+    comparison_points = [
+        'duration_weeks',
+        'experience_required', 
+        'cost_estimate',
+        'compounds_count',
+        'injection_frequency',
+        'monitoring_complexity',
+        'expected_results',
+        'safety_rating'
+    ]
+    
+    matrix = {}
+    
+    for point in comparison_points:
+        matrix[point] = {}
+        for cycle in cycles:
+            cycle_id = cycle['id']
+            matrix[point][cycle_id] = extract_comparison_value(cycle, point)
+    
+    return matrix
+
+def generate_comparison_recommendations(cycles: List[Dict], user_profile) -> Dict:
+    """AI рекомендації для порівняння курсів"""
+    
+    recommendations = {
+        'best_for_beginner': None,
+        'best_value': None,
+        'safest_option': None,
+        'most_effective': None,
+        'personalized_choice': None
+    }
+    
+    # Аналіз кожного критерію
+    for cycle in cycles:
+        if cycle['experience_required'] == 'beginner':
+            if not recommendations['best_for_beginner'] or cycle['ai_score'] > recommendations['best_for_beginner']['ai_score']:
+                recommendations['best_for_beginner'] = cycle
+        
+        # Найкраща ціна/якість
+        value_score = cycle['ai_score'] / cycle['cost_estimate']['min'] * 100
+        if not recommendations['best_value'] or value_score > recommendations['best_value'].get('value_score', 0):
+            recommendations['best_value'] = {**cycle, 'value_score': value_score}
+        
+        # Найбезпечніший
+        if cycle['user_suitability']['safety_rating'] == 'high':
+            if not recommendations['safest_option'] or cycle['ai_score'] > recommendations['safest_option']['ai_score']:
+                recommendations['safest_option'] = cycle
+    
+    # Персональний вибір (найвищий AI скор)
+    recommendations['personalized_choice'] = max(cycles, key=lambda x: x['ai_score'])
+    
+    return recommendations
+
+def get_total_cycles_count() -> int:
+    """Загальна кількість курсів"""
+    count = 0
+    for category_data in CYCLES_DATA.values():
+        if isinstance(category_data, dict):
+            count += len([k for k in category_data.keys() if k != 'meta'])
+    return count
+
+def get_available_filters() -> List[str]:
+    """Доступні фільтри"""
+    return [
+        'duration', 'goal', 'experience_level', 
+        'budget', 'compounds', 'injection_preference'
+    ]
+
+def get_sorting_options() -> List[Dict]:
+    """Опції сортування"""
+    return [
+        {'value': 'recommended', 'label': 'Рекомендовано для вас'},
+        {'value': 'price_low', 'label': 'Спочатку дешевші'},
+        {'value': 'price_high', 'label': 'Спочатку дорожчі'},
+        {'value': 'duration', 'label': 'За тривалістю'}
+    ]
+
+# Додаткові utility функції
+def extract_compounds_summary(cycle_data: Dict) -> List[str]:
+    """Витяг списку препаратів курсу"""
+    compounds = []
+    
+    if 'compounds' in cycle_data:
+        for compound in cycle_data['compounds']:
+            if isinstance(compound, dict):
+                compounds.append(compound.get('name', 'Невідомий'))
+            else:
+                compounds.append(str(compound))
+    
+    return compounds
+
+def estimate_cycle_cost(cycle_data: Dict) -> Dict:
+    """Оцінка вартості курсу"""
+    
+    if 'total_cost_usd' in cycle_data:
+        return cycle_data['total_cost_usd']
+    
+    # Приблизна оцінка
+    return {'min': 80, 'max': 150}
+
+def calculate_user_suitability(cycle_data: Dict, user_profile) -> Dict:
+    """Розрахунок придатності курсу для користувача"""
+    
+    suitability = {
+        'overall_score': 7,  # 1-10
+        'safety_rating': 'medium',  # low, medium, high
+        'match_percentage': 75,  # 0-100%
+        'concerns': [],
+        'benefits': []
+    }
+    
+    # Аналіз придатності
+    if user_profile and hasattr(user_profile, 'experience_level'):
+        required_exp = cycle_data.get('experience_required', 'beginner')
+        if user_profile.experience_level == required_exp:
+            suitability['overall_score'] += 1
+            suitability['benefits'].append('Відповідає вашому рівню досвіду')
+    
+    return suitability
