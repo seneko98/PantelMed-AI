@@ -1,0 +1,901 @@
+# routes/steroids.py
+"""
+PantelMed AI - Flask API маршрути для стероїдної системи
+Повна веб-інтеграція з AI асистентом та корективами
+"""
+
+from flask import Blueprint, request, jsonify, session
+from flask_cors import cross_origin
+import json
+from datetime import datetime, timedelta
+from typing import Dict, List
+
+# Імпорти з нашої системи
+from assistant.steroids.cycle_matcher import CycleMatcher, SteroidAIAssistant, UserProfile, ExperienceLevel, CycleGoal
+from assistant.steroids.questionnaire import SteroidQuestionnaire
+from models.user import User
+from models.steroid_cycle import SteroidCycle, CycleProgress
+from utils.auth import require_auth, get_current_user
+from utils.payment import verify_crypto_payment
+
+# Створення Blueprint
+steroids_bp = Blueprint('steroids', __name__, url_prefix='/api/steroids')
+
+# Ініціалізація AI системи
+cycle_matcher = CycleMatcher()
+ai_assistant = SteroidAIAssistant()
+questionnaire = SteroidQuestionnaire()
+
+# ===========================================
+# АНКЕТУВАННЯ ТА ПІДБІР КУРСІВ
+# ===========================================
+
+@steroids_bp.route('/questionnaire/start', methods=['POST'])
+@require_auth
+@cross_origin()
+def start_questionnaire():
+    """Початок анкетування з корективами"""
+    
+    user = get_current_user()
+    
+    # Перевірка оплати для персональних рекомендацій
+    payment_status = verify_crypto_payment(user.id)
+    if not payment_status['paid']:
+        return jsonify({
+            'status': 'payment_required',
+            'message': 'Персональні курси та дозування доступні після оплати',
+            'free_info': 'Загальна інформація про типи курсів безкоштовна',
+            'payment_info': payment_status
+        }), 402
+    
+    # Отримання першого питання з корективами
+    first_question = questionnaire.get_first_question()
+    
+    # Збереження стану анкетування
+    session['questionnaire_state'] = {
+        'user_id': user.id,
+        'started_at': datetime.utcnow().isoformat(),
+        'current_question_id': first_question['id'],
+        'answers': {}
+    }
+    
+    return jsonify({
+        'status': 'success',
+        'message': '🎯 Почнемо підбір персонального курсу!',
+        'question': first_question,
+        'progress': {
+            'current': 1,
+            'total': questionnaire.total_questions,
+            'percentage': 5
+        }
+    })
+
+@steroids_bp.route('/questionnaire/answer', methods=['POST'])
+@require_auth
+@cross_origin()
+def submit_questionnaire_answer():
+    """Обробка відповіді та отримання наступного питання"""
+    
+    data = request.get_json()
+    question_id = data.get('question_id')
+    answer = data.get('answer')
+    
+    if not question_id or not answer:
+        return jsonify({'error': 'Потрібні question_id та answer'}), 400
+    
+    state = session.get('questionnaire_state')
+    if not state:
+        return jsonify({'error': 'Сесія анкетування втрачена'}), 400
+    
+    # Збереження відповіді
+    state['answers'][question_id] = answer
+    
+    # КОРЕКТИВИ: Обробка спеціальних питань
+    if question_id == 'blood_pressure' and answer == 'hypertension':
+        # Додаємо спеціальний протокол для гіпертонії
+        state['answers']['hypertension_protocol'] = {
+            'sartans': True,
+            'magnesium_400mg': True,
+            'tadalafil_5_10mg': True,
+            'daily_monitoring': True
+        }
+    
+    elif question_id == 'injection_readiness':
+        # КОРЕКТИВИ: Нова система готовності до ін'єкцій
+        injection_warnings = {
+            'no': 'Тільки таблетки - НЕ РЕКОМЕНДУЄТЬСЯ',
+            'scared_help': 'Ін\'єкції раз на тиждень - НЕ РЕКОМЕНДУЄТЬСЯ (нестабільні гормони)',
+            'twice_weekly': 'Оптимально для довгих ефірів',
+            'comfortable': 'Дозволяє використання коротких ефірів',
+            'daily': 'Максимальна гнучкість протоколів'
+        }
+        state['injection_warning'] = injection_warnings.get(answer, '')
+    
+    elif question_id == 'lab_monitoring':
+        # КОРЕКТИВИ: Фінансова здатність здавати аналізи
+        monitoring_protocols = {
+            'regular': 'Повний моніторинг: естрадіол день 10, щомісяця повна панель',
+            'limited': 'Базовий: щомісяця естрадіол + пролактин + ЗАК + ліпіди через 4-6 тижнів',
+            'difficult': 'Мінімальний: по можливості раз в місяць базовий пакет'
+        }
+        state['monitoring_protocol'] = monitoring_protocols.get(answer, '')
+    
+    # Отримання наступного питання
+    next_question = questionnaire.get_next_question(question_id, state['answers'])
+    
+    if next_question:
+        # Продовження анкетування
+        state['current_question_id'] = next_question['id']
+        session['questionnaire_state'] = state
+        
+        return jsonify({
+            'status': 'continue',
+            'question': next_question,
+            'progress': {
+                'current': len(state['answers']),
+                'total': questionnaire.total_questions,
+                'percentage': (len(state['answers']) / questionnaire.total_questions) * 100
+            },
+            'warnings': state.get('injection_warning', '')
+        })
+    
+    else:
+        # Анкетування завершено - генерація рекомендацій
+        return complete_questionnaire(state)
+
+def complete_questionnaire(state: Dict):
+    """Завершення анкетування та генерація рекомендацій"""
+    
+    user = get_current_user()
+    
+    # Створення профілю користувача
+    profile = create_user_profile_from_answers(state['answers'])
+    
+    # AI підбір курсів
+    recommendations = cycle_matcher.match_cycle(profile)
+    
+    if recommendations['status'] == 'blocked':
+        return jsonify({
+            'status': 'blocked',
+            'reason': recommendations['reason'],
+            'alternative': recommendations.get('alternative'),
+            'consultation_required': True
+        })
+    
+    # Збереження результатів в БД
+    save_questionnaire_results(user.id, state['answers'], recommendations)
+    
+    # Очищення сесії
+    session.pop('questionnaire_state', None)
+    
+    return jsonify({
+        'status': 'completed',
+        'message': '✅ Анкетування завершено! Ваші персональні рекомендації:',
+        'recommendations': recommendations,
+        'ai_explanation': recommendations.get('ai_reasoning'),
+        'safety_warnings': recommendations.get('safety_warnings', []),
+        'monitoring': recommendations.get('monitoring_protocol'),
+        'next_steps': [
+            'Ознайомтеся з рекомендованими курсами',
+            'Здайте базові аналізи',
+            'Придбайте необхідні препарати',
+            'Почніть моніторинг здоров\'я'
+        ]
+    })
+
+# ===========================================
+# AI ДІАЛОГ ТА КОНСУЛЬТАЦІЇ
+# ===========================================
+
+@steroids_bp.route('/ai/chat', methods=['POST'])
+@require_auth
+@cross_origin()
+def ai_chat():
+    """AI діалог з користувачем"""
+    
+    data = request.get_json()
+    message = data.get('message', '')
+    context = data.get('context', {})
+    
+    user = get_current_user()
+    
+    # AI обробка повідомлення
+    ai_response = ai_assistant.process_user_message(user.id, message, context)
+    
+    # Збереження діалогу
+    save_ai_conversation(user.id, message, ai_response)
+    
+    return jsonify({
+        'status': 'success',
+        'ai_response': ai_response,
+        'timestamp': datetime.utcnow().isoformat()
+    })
+
+@steroids_bp.route('/ai/progress-tracking', methods=['POST'])
+@require_auth
+@cross_origin()
+def track_cycle_progress():
+    """Відстеження прогресу курсу з AI"""
+    
+    data = request.get_json()
+    cycle_id = data.get('cycle_id')
+    progress_data = data.get('progress_data')
+    
+    user = get_current_user()
+    
+    # Знаходження активного курсу
+    active_cycle = SteroidCycle.find_active_cycle(user.id, cycle_id)
+    if not active_cycle:
+        return jsonify({'error': 'Активний курс не знайдено'}), 404
+    
+    # AI аналіз прогресу
+    ai_analysis = ai_assistant._track_cycle_progress(user.id, str(progress_data), {
+        'cycle_data': active_cycle.to_dict()
+    })
+    
+    # Збереження прогресу
+    progress = CycleProgress(
+        cycle_id=cycle_id,
+        user_id=user.id,
+        week_number=progress_data.get('week'),
+        weight_kg=progress_data.get('weight'),
+        side_effects=progress_data.get('side_effects', []),
+        satisfaction_rating=progress_data.get('satisfaction'),
+        ai_analysis=ai_analysis,
+        recorded_at=datetime.utcnow()
+    )
+    progress.save()
+    
+    return jsonify({
+        'status': 'success',
+        'ai_analysis': ai_analysis,
+        'recommendations': ai_analysis.get('recommendations', []),
+        'next_check_date': (datetime.utcnow() + timedelta(weeks=1)).isoformat()
+    })
+
+# ===========================================
+# КУРСИ ТА РЕКОМЕНДАЦІЇ
+# ===========================================
+
+@steroids_bp.route('/cycles/recommended', methods=['GET'])
+@require_auth
+@cross_origin()
+def get_recommended_cycles():
+    """Отримання рекомендованих курсів для користувача"""
+    
+    user = get_current_user()
+    
+    # Останні результати анкетування
+    last_results = get_last_questionnaire_results(user.id)
+    if not last_results:
+        return jsonify({
+            'error': 'Спочатку пройдіть анкетування',
+            'action': 'start_questionnaire'
+        }), 400
+    
+    return jsonify({
+        'status': 'success',
+        'recommended_cycles': last_results['recommendations'],
+        'updated_at': last_results['created_at']
+    })
+
+@steroids_bp.route('/cycles/<cycle_id>/details', methods=['GET'])
+@require_auth
+@cross_origin()
+def get_cycle_details():
+    """Детальна інформація про курс"""
+    
+    cycle_id = request.view_args['cycle_id']
+    
+    # Завантаження деталей курсу
+    cycle_details = load_cycle_details(cycle_id)
+    if not cycle_details:
+        return jsonify({'error': 'Курс не знайдено'}), 404
+    
+    user = get_current_user()
+    user_profile = get_user_profile(user.id)
+    
+    # Перевірка безпеки для користувача
+    safety_check = cycle_matcher._check_safety_restrictions(user_profile)
+    
+    # Розрахунок повної вартості
+    cost_breakdown = calculate_full_cycle_cost(cycle_id, user_profile.to_dict())
+    
+    return jsonify({
+        'status': 'success',
+        'cycle': cycle_details,
+        'safety_check': safety_check,
+        'cost_breakdown': cost_breakdown,
+        'personalized_adjustments': get_personalized_adjustments(cycle_details, user_profile)
+    })
+
+@steroids_bp.route('/cycles/start', methods=['POST'])
+@require_auth
+@cross_origin()
+def start_cycle():
+    """Початок курсу"""
+    
+    data = request.get_json()
+    cycle_id = data.get('cycle_id')
+    start_date = data.get('start_date', datetime.utcnow().isoformat())
+    
+    user = get_current_user()
+    
+    # Перевірка активних курсів
+    active_cycles = SteroidCycle.find_active_cycles(user.id)
+    if active_cycles:
+        return jsonify({
+            'error': 'У вас вже є активний курс',
+            'active_cycle': active_cycles[0].to_dict()
+        }), 400
+    
+    # Створення нового курсу
+    cycle = SteroidCycle(
+        user_id=user.id,
+        cycle_template_id=cycle_id,
+        start_date=datetime.fromisoformat(start_date.replace('Z', '+00:00')),
+        status='active',
+        personalized_adjustments=data.get('adjustments', {}),
+        created_at=datetime.utcnow()
+    )
+    cycle.save()
+    
+    # AI повідомлення про початок
+    ai_message = ai_assistant._start_cycle_message(cycle.to_dict())
+    
+    return jsonify({
+        'status': 'success',
+        'message': '🚀 Курс розпочато!',
+        'cycle': cycle.to_dict(),
+        'ai_guidance': ai_message,
+        'first_check_date': (datetime.utcnow() + timedelta(days=10)).isoformat()
+    })
+
+# ===========================================
+# ПРОГРЕСІЯ ТА НАСТУПНІ КУРСИ
+# ===========================================
+
+@steroids_bp.route('/progression/next-cycle', methods=['POST'])
+@require_auth
+@cross_origin()
+def suggest_next_cycle():
+    """AI пропозиція наступного курсу (на півсходинки вище)"""
+    
+    data = request.get_json()
+    completed_cycle_id = data.get('completed_cycle_id')
+    cycle_results = data.get('results')
+    
+    user = get_current_user()
+    
+    # Знаходження завершеного курсу
+    completed_cycle = SteroidCycle.get(completed_cycle_id)
+    if not completed_cycle or completed_cycle.user_id != user.id:
+        return jsonify({'error': 'Курс не знайдено'}), 404
+    
+    # AI аналіз результатів та прогресія
+    progression_analysis = ai_assistant._plan_next_cycle(user.id, {
+        'cycle_results': cycle_results,
+        'previous_cycle': completed_cycle.to_dict()
+    })
+    
+    # КОРЕКТИВИ: Логіка "на півсходинки вище"
+    if cycle_results.get('satisfaction', 0) >= 7:
+        next_level_cycles = find_progression_cycles(completed_cycle.cycle_template_id)
+        progression_analysis['next_level_options'] = next_level_cycles
+        progression_analysis['message'] = "🎯 Готовий для курсу сильнішого на півсходинки!"
+    
+    # Збереження результатів курсу
+    completed_cycle.results = cycle_results
+    completed_cycle.status = 'completed'
+    completed_cycle.completed_at = datetime.utcnow()
+    completed_cycle.save()
+    
+    return jsonify({
+        'status': 'success',
+        'progression_analysis': progression_analysis,
+        'next_cycle_recommendations': progression_analysis.get('next_level_options', []),
+        'waiting_period': calculate_waiting_period(completed_cycle.to_dict())
+    })
+
+# ===========================================
+# БЕЗПЕКА ТА МОНІТОРИНГ
+# ===========================================
+
+@steroids_bp.route('/safety/check', methods=['POST'])
+@require_auth
+@cross_origin()
+def safety_check():
+    """Перевірка безпеки курсу"""
+    
+    data = request.get_json()
+    cycle_data = data.get('cycle')
+    user_conditions = data.get('medical_conditions', [])
+    
+    user = get_current_user()
+    user_profile = get_user_profile(user.id)
+    
+    # Комплексна перевірка безпеки
+    safety_analysis = {
+        'overall_risk': 'low',
+        'warnings': [],
+        'contraindications': [],
+        'required_monitoring': [],
+        'adjustments_needed': []
+    }
+    
+    # КОРЕКТИВИ: Спеціальні перевірки
+    
+    # Гіпертонія
+    if 'hypertension' in user_conditions:
+        safety_analysis['warnings'].append('Гіпертонія потребує спеціального протоколу')
+        safety_analysis['required_monitoring'].append('Щоденний контроль тиску')
+        safety_analysis['adjustments_needed'].append({
+            'type': 'hypertension_protocol',
+            'additions': ['Сартани', 'Магній 400мг', 'Тадалафіл 5-10мг']
+        })
+    
+    # Алопеція
+    if user_profile.alopecia_status == 'active':
+        safety_analysis['contraindications'].append('ДГТ похідні повністю заборонені')
+        safety_analysis['overall_risk'] = 'critical'
+    
+    # Атеросклероз 38+
+    if user_profile.age >= 38 and 'atherosclerosis_suspected' in user_conditions:
+        safety_analysis['contraindications'].append('Таблетки заборонені, максимум 250мг тесту')
+        safety_analysis['overall_risk'] = 'high'
+    
+    return jsonify({
+        'status': 'success',
+        'safety_analysis': safety_analysis,
+        'consultation_recommended': safety_analysis['overall_risk'] in ['high', 'critical']
+    })
+
+@steroids_bp.route('/monitoring/schedule', methods=['GET'])
+@require_auth
+@cross_origin()
+def get_monitoring_schedule():
+    """Розклад моніторингу аналізів"""
+    
+    user = get_current_user()
+    user_profile = get_user_profile(user.id)
+    active_cycle = SteroidCycle.find_active_cycle(user.id)
+    
+    if not active_cycle:
+        return jsonify({'error': 'Немає активного курсу'}), 404
+    
+    # КОРЕКТИВИ: Генерація розкладу за фінансовими можливостями
+    schedule = generate_monitoring_schedule(user_profile, active_cycle)
+    
+    return jsonify({
+        'status': 'success',
+        'monitoring_schedule': schedule,
+        'cost_estimate': schedule['total_cost_usd'],
+        'next_test_date': schedule['next_test']
+    })
+
+# ===========================================
+# ДОПОМІЖНІ ФУНКЦІЇ
+# ===========================================
+
+def create_user_profile_from_answers(answers: Dict) -> UserProfile:
+    """Створення профілю користувача з відповідей анкети"""
+    
+    return UserProfile(
+        age=int(answers.get('age', '25').split('-')[0]),
+        weight=int(answers.get('weight', '75').split('-')[0]),
+        height=int(answers.get('height', '175').split('-')[0]),
+        experience_level=ExperienceLevel(answers.get('experience_level', 'beginner')),
+        cycle_count=int(answers.get('cycle_count', '0')),
+        main_goal=CycleGoal(answers.get('main_goal', 'mass_gain')),
+        sport_type=answers.get('sport_type', 'fitness'),
+        duration_preference=answers.get('duration', '8_weeks'),
+        alopecia_status=answers.get('alopecia', 'none'),
+        prostate_status=answers.get('prostate', 'healthy'),
+        liver_status=answers.get('liver', 'healthy'),
+        joint_status=answers.get('joints', 'healthy'),
+        blood_pressure_status=answers.get('blood_pressure', 'normal'),
+        atherosclerosis_risk=answers.get('atherosclerosis', 'no_risk'),
+        injection_readiness=answers.get('injection_readiness', 'twice_weekly'),
+        lab_monitoring_capability=answers.get('lab_monitoring', 'limited'),
+        budget_category=answers.get('budget', 'standard'),
+        max_budget_usd=int(answers.get('budget_amount', '200'))
+    )
+
+def save_questionnaire_results(user_id: str, answers: Dict, recommendations: Dict):
+    """Збереження результатів анкетування"""
+    
+    # Збереження в MongoDB або іншу БД
+    from models.questionnaire_result import QuestionnaireResult
+    
+    result = QuestionnaireResult(
+        user_id=user_id,
+        answers=answers,
+        recommendations=recommendations,
+        created_at=datetime.utcnow()
+    )
+    result.save()
+
+def get_last_questionnaire_results(user_id: str) -> Dict:
+    """Отримання останніх результатів анкетування"""
+    
+    from models.questionnaire_result import QuestionnaireResult
+    return QuestionnaireResult.find_latest(user_id)
+
+def calculate_waiting_period(completed_cycle: Dict) -> Dict:
+    """Розрахунок періоду очікування між курсами"""
+    
+    cycle_duration = completed_cycle.get('duration_weeks', 8)
+    
+    # Правило: час відновлення = час курсу + ПКТ
+    waiting_weeks = cycle_duration + 3  # + 3 тижні ПКТ
+    
+    return {
+        'waiting_period_weeks': waiting_weeks,
+        'earliest_next_cycle': (datetime.utcnow() + timedelta(weeks=waiting_weeks)).isoformat(),
+        'reasoning': f"Відновлення після {cycle_duration}-тижневого курсу + ПКТ"
+    }
+
+# ===========================================
+# ІНТЕГРАЦІЯ З КАТАЛОГОМ КУРСІВ
+# ===========================================
+
+@steroids_bp.route('/dashboard', methods=['GET'])
+@require_auth
+@cross_origin()
+def get_user_dashboard():
+    """Головна панель користувача після анкетування"""
+    
+    user = get_current_user()
+    
+    # Перевірка оплати
+    payment_status = verify_crypto_payment(user.id)
+    if not payment_status['paid']:
+        return jsonify({
+            'status': 'payment_required',
+            'message': 'Доступ до повного функціоналу після оплати'
+        }), 402
+    
+    # AI рекомендації
+    ai_recommendations = get_user_ai_recommendations(user.id)
+    
+    # Популярні курси
+    popular_cycles = get_popular_cycles_for_user(user.id)
+    
+    # Статистика
+    user_stats = {
+        'total_cycles': SteroidCycle.count_user_cycles(user.id),
+        'experience_level': get_user_experience_level(user.id),
+        'safety_score': calculate_user_safety_score(user.id)
+    }
+    
+    dashboard = {
+        'ai_recommendations': ai_recommendations,
+        'popular_cycles': popular_cycles,
+        'user_stats': user_stats,
+        'quick_actions': [
+            {'action': 'browse_all_cycles', 'label': '🔍 Переглянути всі курси'},
+            {'action': 'compare_cycles', 'label': '⚖️ Порівняти курси'},
+            {'action': 'filter_by_goal', 'label': '🎯 Фільтр за цілями'},
+            {'action': 'ai_chat', 'label': '🤖 Чат з AI консультантом'}
+        ],
+        'navigation_menu': [
+            {'id': 'ai_recommendations', 'label': '🎯 AI Рекомендації', 'badge': len(ai_recommendations)},
+            {'id': 'all_cycles', 'label': '📚 Всі курси', 'badge': get_total_cycles_count()},
+            {'id': 'my_cycles', 'label': '📊 Мої курси', 'badge': user_stats['total_cycles']},
+            {'id': 'supplements', 'label': '💊 БАДи та підтримка'},
+            {'id': 'monitoring', 'label': '🔬 Моніторинг здоров\'я'},
+            {'id': 'hrt', 'label': '⚕️ ГЗТ протоколи'}
+        ]
+    }
+    
+    return jsonify({
+        'status': 'success',
+        'dashboard': dashboard
+    })
+
+@steroids_bp.route('/menu/navigation', methods=['GET'])
+@require_auth
+@cross_origin()
+def get_navigation_menu():
+    """Навігаційне меню з кількістю елементів"""
+    
+    user = get_current_user()
+    payment_status = verify_crypto_payment(user.id)
+    
+    if not payment_status['paid']:
+        # Обмежене меню для безкоштовних користувачів
+        return jsonify({
+            'status': 'limited',
+            'menu': [
+                {'id': 'questionnaire', 'label': '📋 Пройти анкету', 'available': True},
+                {'id': 'free_info', 'label': '📖 Загальна інформація', 'available': True},
+                {'id': 'payment', 'label': '💳 Оплатити доступ', 'available': True, 'highlight': True}
+            ]
+        })
+    
+    # Повне меню для оплачених користувачів
+    menu = [
+        {
+            'id': 'ai_recommendations', 
+            'label': '🎯 AI Рекомендації',
+            'description': 'Персональні курси підібрані AI',
+            'available': True,
+            'badge': count_user_recommendations(user.id)
+        },
+        {
+            'id': 'browse_cycles',
+            'label': '🔍 Переглянути всі курси', 
+            'description': 'Повний каталог з фільтрами',
+            'available': True,
+            'badge': get_total_cycles_count(),
+            'submenu': [
+                {'id': 'short_cycles', 'label': '⚡ Короткі (4 тижні)'},
+                {'id': 'medium_cycles', 'label': '📅 Середні (8-12 тижнів)'},
+                {'id': 'long_cycles', 'label': '📆 Довгі (14-16 тижнів)'},
+                {'id': 'specialized', 'label': '🎯 Спеціалізовані'}
+            ]
+        },
+        {
+            'id': 'compare_cycles',
+            'label': '⚖️ Порівняти курси',
+            'description': 'Порівняння до 4 курсів',
+            'available': True
+        },
+        {
+            'id': 'cycle_builder',
+            'label': '🛠️ Конструктор курсу',
+            'description': 'Створити власний курс з AI',
+            'available': True
+        },
+        {
+            'id': 'supplements',
+            'label': '💊 БАДи та підтримка',
+            'description': 'База супплементів',
+            'available': True,
+            'submenu': [
+                {'id': 'on_cycle_support', 'label': 'Підтримка на курсі'},
+                {'id': 'pct_supplements', 'label': 'Супплементи для ПКТ'},
+                {'id': 'general_health', 'label': 'Загальне здоров\'я'}
+            ]
+        },
+        {
+            'id': 'my_cycles',
+            'label': '📊 Мої курси',
+            'description': 'Історія та прогрес',
+            'available': True,
+            'badge': SteroidCycle.count_user_cycles(user.id)
+        },
+        {
+            'id': 'monitoring',
+            'label': '🔬 Моніторинг',
+            'description': 'Аналізи та здоров\'я',
+            'available': True
+        },
+        {
+            'id': 'hrt_protocols',
+            'label': '⚕️ ГЗТ',
+            'description': 'Гормонозамісна терапія',
+            'available': True
+        },
+        {
+            'id': 'ai_chat',
+            'label': '🤖 AI Консультант',
+            'description': 'Чат з AI спеціалістом',
+            'available': True
+        }
+    ]
+    
+    return jsonify({
+        'status': 'success',
+        'menu': menu,
+        'user_level': get_user_experience_level(user.id)
+    })
+
+@steroids_bp.route('/quick-access/<action>', methods=['GET'])
+@require_auth
+@cross_origin()
+def quick_access_actions(action: str):
+    """Швидкі дії з головного меню"""
+    
+    user = get_current_user()
+    payment_status = verify_crypto_payment(user.id)
+    
+    if not payment_status['paid']:
+        return jsonify({'status': 'payment_required'}), 402
+    
+    user_profile = get_user_profile(user.id)
+    
+    if action == 'browse_by_goal':
+        # Курси за цілями користувача
+        user_goal = user_profile.main_goal if user_profile else 'mass_gain'
+        cycles = filter_cycles_by_goal(user_goal)
+        
+        return jsonify({
+            'status': 'success',
+            'action': 'browse_by_goal',
+            'goal': user_goal,
+            'cycles': cycles
+        })
+    
+    elif action == 'browse_by_experience':
+        # Курси за рівнем досвіду
+        experience_level = get_user_experience_level(user.id)
+        cycles = filter_cycles_by_experience(experience_level)
+        
+        return jsonify({
+            'status': 'success', 
+            'action': 'browse_by_experience',
+            'experience_level': experience_level,
+            'cycles': cycles
+        })
+    
+    elif action == 'budget_optimizer':
+        # Оптимізація за бюджетом
+        budget = user_profile.max_budget_usd if user_profile else 200
+        optimized_cycles = optimize_cycles_by_budget(budget, user_profile)
+        
+        return jsonify({
+            'status': 'success',
+            'action': 'budget_optimizer', 
+            'budget': budget,
+            'optimized_cycles': optimized_cycles
+        })
+    
+    elif action == 'safety_first':
+        # Найбезпечніші курси
+        safe_cycles = get_safest_cycles_for_user(user_profile)
+        
+        return jsonify({
+            'status': 'success',
+            'action': 'safety_first',
+            'safe_cycles': safe_cycles
+        })
+    
+    else:
+        return jsonify({'error': 'Невідома дія'}), 400
+
+# ===========================================
+# СТАТИСТИКА ТА АНАЛІТИКА
+# ===========================================
+
+@steroids_bp.route('/stats/user', methods=['GET'])
+@require_auth
+@cross_origin()
+def get_user_stats():
+    """Детальна статистика користувача"""
+    
+    user = get_current_user()
+    
+    stats = {
+        'profile': {
+            'total_cycles': SteroidCycle.count_user_cycles(user.id),
+            'current_experience_level': get_user_experience_level(user.id),
+            'safety_score': calculate_user_safety_score(user.id),
+            'progression_path': get_user_progression_path(user.id)
+        },
+        'browsing': {
+            'total_cycles_viewed': count_user_cycle_views(user.id),
+            'cycles_compared': count_user_comparisons(user.id),
+            'favorite_categories': get_user_favorite_categories(user.id)
+        },
+        'ai_interaction': {
+            'ai_recommendations_received': count_ai_recommendations(user.id),
+            'ai_chat_sessions': count_ai_chat_sessions(user.id),
+            'personalized_cycles_created': count_personalized_cycles(user.id)
+        },
+        'achievements': generate_user_achievements(user.id)
+    }
+    
+    return jsonify({
+        'status': 'success',
+        'stats': stats
+    })
+
+@steroids_bp.route('/stats/popular', methods=['GET'])
+@require_auth
+@cross_origin()
+def get_popular_cycles_stats():
+    """Статистика популярних курсів"""
+    
+    stats = {
+        'most_viewed': get_most_viewed_cycles(),
+        'most_started': get_most_started_cycles(),
+        'highest_rated': get_highest_rated_cycles(),
+        'trending_this_month': get_trending_cycles(),
+        'by_experience_level': {
+            'beginner': get_popular_cycles_by_level('beginner'),
+            'intermediate': get_popular_cycles_by_level('intermediate'),
+            'advanced': get_popular_cycles_by_level('advanced')
+        }
+    }
+    
+    return jsonify({
+        'status': 'success',
+        'popular_stats': stats
+    })
+
+# ===========================================
+# ДОПОМІЖНІ ФУНКЦІЇ
+# ===========================================
+
+def get_user_ai_recommendations(user_id: str) -> List[Dict]:
+    """AI рекомендації для користувача"""
+    
+    last_results = get_last_questionnaire_results(user_id)
+    if not last_results:
+        return []
+    
+    return last_results.get('recommendations', {}).get('recommended_cycles', [])
+
+def get_popular_cycles_for_user(user_id: str) -> List[Dict]:
+    """Популярні курси для конкретного користувача"""
+    
+    user_profile = get_user_profile(user_id)
+    experience_level = get_user_experience_level(user_id)
+    
+    # Популярні курси для рівня досвіду користувача
+    popular = get_popular_cycles_by_level(experience_level)
+    
+    return popular[:5]  # Топ 5
+
+def count_user_recommendations(user_id: str) -> int:
+    """Кількість AI рекомендацій"""
+    recommendations = get_user_ai_recommendations(user_id)
+    return len(recommendations)
+
+def filter_cycles_by_goal(goal: str) -> List[Dict]:
+    """Фільтрація курсів за ціллю"""
+    # Реалізація фільтрації
+    return []
+
+def filter_cycles_by_experience(experience_level: str) -> List[Dict]:
+    """Фільтрація курсів за досвідом"""
+    # Реалізація фільтрації
+    return []
+
+def optimize_cycles_by_budget(budget: int, user_profile) -> List[Dict]:
+    """Оптимізація курсів за бюджетом"""
+    # Реалізація оптимізації
+    return []
+
+def get_safest_cycles_for_user(user_profile) -> List[Dict]:
+    """Найбезпечніші курси"""
+    # Реалізація відбору безпечних курсів
+    return []
+
+# Функції статистики
+def count_user_cycle_views(user_id: str) -> int:
+    return 0  # Заглушка
+
+def count_user_comparisons(user_id: str) -> int:
+    return 0  # Заглушка
+
+def get_user_favorite_categories(user_id: str) -> List[str]:
+    return []  # Заглушка
+
+def count_ai_recommendations(user_id: str) -> int:
+    return 0  # Заглушка
+
+def count_ai_chat_sessions(user_id: str) -> int:
+    return 0  # Заглушка
+
+def count_personalized_cycles(user_id: str) -> int:
+    return 0  # Заглушка
+
+def generate_user_achievements(user_id: str) -> List[Dict]:
+    return []  # Заглушка
+
+def get_most_viewed_cycles() -> List[Dict]:
+    return []  # Заглушка
+
+def get_most_started_cycles() -> List[Dict]:
+    return []  # Заглушка
+
+def get_highest_rated_cycles() -> List[Dict]:
+    return []  # Заглушка
+
+def get_trending_cycles() -> List[Dict]:
+    return []  # Заглушка
+
+def get_popular_cycles_by_level(level: str) -> List[Dict]:
+    return []  # Заглушка
