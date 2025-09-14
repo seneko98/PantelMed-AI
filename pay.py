@@ -23,8 +23,6 @@ def create_payment():
         user_id = data.get("user_id")
         package_id = data.get("package_id")  # ID пакета з MongoDB
         module = data.get("module")  # Наприклад, 'analyzer', 'consultation'
-        payment_method = data.get("payment_method")  # 'crypto' або 'cod' (Нова Пошта)
-        contact_info = data.get("contact_info")  # Для Нової Пошти
 
         if not user_id:
             return jsonify({"error": "user_id обов'язковий"}), 400
@@ -53,15 +51,14 @@ def create_payment():
         else:
             return jsonify({"error": "Потрібно вказати package_id або module"}), 400
 
-        # Створюємо платіж
+        # Створюємо платіж (тільки крипто)
         payment = {
             "user_id": user_id,
             "item_type": item_type,
             "item_id": item_id,
             "item_name": item_name,
             "amount": amount,
-            "payment_method": payment_method,
-            "contact_info": contact_info,
+            "payment_method": "crypto",
             "status": "pending",
             "created_at": datetime.utcnow()
         }
@@ -72,8 +69,8 @@ def create_payment():
             "status": "success",
             "payment_id": str(payment_id),
             "amount": amount,
-            "payment_method": payment_method,
-            "tron_wallet": TRON_WALLET if payment_method == "crypto" else None
+            "payment_method": "crypto",
+            "tron_wallet": TRON_WALLET
         })
 
     except Exception as e:
@@ -106,7 +103,7 @@ def check_payment_status():
             user_id = payment["user_id"]
             # Оновлення преміум-доступу в user_profiles
             db.update_document("user_profiles", {"user_id": user_id}, {"$set": {"subscription_active": True}})
-            # Оновлення модулів (як було)
+            # Оновлення модулів
             if payment["item_type"] == "package":
                 db.collections["users"].update_one(
                     {"telegram_id": user_id},
