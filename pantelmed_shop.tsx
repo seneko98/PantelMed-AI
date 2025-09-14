@@ -11,11 +11,11 @@ const PantelmedShop: React.FC = () => {
   useEffect(() => {
     fetch('http://localhost:5000/api/shop/products?category=' + (selectedCategory === 'all' ? '' : selectedCategory))
       .then(response => response.json())
-      .then(data => setProducts(data.products));
+      .then(data => setProducts(data.products || []));
   }, [selectedCategory]);
 
   const addToCart = (product: any) => {
-    setCart([...cart, { product_id: product.name, quantity: 1, price: product.price }]);
+    setCart([...cart, { product_id: product._id, quantity: 1, price: product.price }]);
   };
 
   const handleOrder = async () => {
@@ -30,7 +30,7 @@ const PantelmedShop: React.FC = () => {
       body: JSON.stringify(orderData)
     });
     const result = await response.json();
-    alert(result.status === 'success' ? `Замовлення #{result.order_id} створено!` : result.error);
+    alert(result.status === 'success' ? `Замовлення #{result.order_id} створено! Сума: ${result.total} USDT` : result.error);
   };
 
   const connectMessenger = async (messenger: string) => {
@@ -60,7 +60,7 @@ const PantelmedShop: React.FC = () => {
       </div>
       <div className="products-grid">
         {products.map((product, index) => (
-          <div key={index} className="product-card">
+          <div key={index} className={`product-card ${product.category === 'skincare' || product.category === 'antiaging' ? 'female-block' : product.category === 'minerals' || product.category === 'vitamins' ? 'nutrition' : 'sport-pharma'}`}>
             <h3>{product.name} {product.emoji}</h3>
             <p>Ціна: {product.price} USDT</p>
             <button onClick={() => addToCart(product)} className="add-btn">Додати до кошика</button>
