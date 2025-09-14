@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PantelMed - Твій портал у біохакінг</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: 'Poppins', sans-serif;
+            background-color: #ffffff;
+            margin: 0;
+            padding: 0;
+            overflow-x: hidden;
+        }
+        .header {
+            background-color: #000000;
+            color: #ffffff;
+            padding: 15px;
+            display: flex;
+            align-items: center;
+            border: 2px solid #ff0000; /* Червона рамка */
+        }
+        .logo {
+            height: 40px;
+            background-color: #333; /* Заглушка для логотипу */
+        }
+        .title {
+            margin-left: 15px;
+            font-size: 1.5em;
+            font-weight: 600;
+            animation: slideIn 1s ease-out;
+        }
+        .intro {
+            height: 300px;
+            background-color: #ffffff;
+            color: #000000;
+            text-align: center;
+            padding-top: 100px;
+        }
+        .intro-text {
+            animation: slideIn 1s ease-out 0.5s backwards;
+        }
+        .chart-section {
+            padding: 40px;
+            text-align: center;
+            background-color: #000000;
+            color: #ffffff;
+            border: 2px solid #ff0000; /* Червона рамка */
+            max-width: 80%; /* Чорний фон не на всю ширину */
+            margin: 0 auto; /* Центрування з білими краями */
+        }
+        .chart-container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        .cta-section {
+            padding: 40px;
+            text-align: center;
+            background-color: #000000;
+            color: #ffffff;
+            border: 2px solid #ff0000; /* Червона рамка */
+            max-width: 80%; /* Чорний фон не на всю ширину */
+            margin: 0 auto; /* Центрування з білими краями */
+        }
+        .cta-btn {
+            margin: 0 10px;
+            padding: 10px 20px;
+            background-color: #000000;
+            color: #ffffff;
+            border: 2px solid #ff0000; /* Червона рамка */
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .footer {
+            background-color: #000000;
+            color: #ffffff;
+            text-align: center;
+            padding: 15px;
+            border: 2px solid #ff0000; /* Червона рамка */
+            max-width: 80%; /* Чорний фон не на всю ширину */
+            margin: 0 auto; /* Центрування з білими краями */
+        }
+        .social-icons a {
+            color: #ffffff;
+            margin: 0 10px;
+            text-decoration: none;
+            font-size: 1.1em;
+        }
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="logo"></div> <!-- Заглушка для логотипу -->
+        <h1 class="title">PantelMed - Твій портал у біохакінг</h1>
+    </div>
+    <div class="intro">
+        <div class="intro-text">
+            <h2>Про мене</h2>
+            <p>Я програв генетичну лотерею, але зміг трансформувати себе — і зможу трансформувати тебе! Я Влад Кравчук — експерт із біохакінгу, фармакології напряму зі силового спорту та єдиноборств. Допоможу набрати масу, схуднути, повернути енергійність, фокус уваги та лібідо в будь-якому віці за допомогою доказових методів сучасності.</p>
+        </div>
+    </div>
+    <div class="chart-section">
+        <h2>Падіння тестостерону</h2>
+        <div class="chart-container">
+            <canvas id="testosteroneChart"></canvas>
+        </div>
+        <p>Падіння тестостерону загрожує твоїй мужності — перевір на платформі!</p>
+    </div>
+    <div class="chart-section">
+        <h2>Смертність від серцево-судинних хвороб</h2>
+        <div class="chart-container">
+            <canvas id="cvdChart"></canvas>
+        </div>
+        <p>Недопусти такого сценарію у своєму житті! Діагностуй хвороби на початках.</p>
+    </div>
+    <div class="chart-section">
+        <h2>Зростання діабету</h2>
+        <div class="chart-container">
+            <canvas id="diabetesChart"></canvas>
+        </div>
+        <p>Здоров’я і харчування вирішують усе. Дієти, тренування, добавки та аналізи — усе на платформі.</p>
+    </div>
+    <div class="cta-section">
+        <p>Час діяти, поки не пізно! Переходь на платформу, діагностуй персонально себе і дізнайся, як зберегти і покращити своє здоров’я.</p>
+        <button class="cta-btn" onclick="window.location.href='https://your-platform.com'">Перейти до платформи</button>
+    </div>
+    <div class="footer">
+        <p>Контакти: [Твій телефон] | <a href="#" class="cta-btn">Зворотний зв’язок</a></p>
+        <div class="social-icons">
+            <a href="your-instagram">Instagram</a>
+            <a href="your-telegram">Telegram</a>
+            <a href="your-viber">Viber</a>
+        </div>
+    </div>
+
+    <script>
+        // Графік тестостерону (нмоль/л)
+        const testosteroneChart = new Chart(document.getElementById('testosteroneChart'), {
+            type: 'line',
+            data: {
+                labels: ['1980', '1990', '2000', '2010', '2020'],
+                datasets: [{
+                    data: [20.9, 18.5, 16.2, 14.8, 13.9],
+                    borderColor: '#ffffff',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                scales: {
+                    y: { beginAtZero: false }
+                },
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return `Тестостерон: ${context.raw} нмоль/л`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Графік ССЗ (відсоток смертності)
+        const cvdChart = new Chart(document.getElementById('cvdChart'), {
+            type: 'line',
+            data: {
+                labels: ['1980', '1990', '2000', '2010', '2020'],
+                datasets: [{
+                    data: [40, 35, 30, 27, 25],
+                    borderColor: '#ffffff',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                scales: {
+                    y: { beginAtZero: true, max: 50 }
+                },
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return `Смертність: ${context.raw}%`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Графік діабету (% населення)
+        const diabetesChart = new Chart(document.getElementById('diabetesChart'), {
+            type: 'line',
+            data: {
+                labels: ['1980', '1990', '2000', '2010', '2020'],
+                datasets: [{
+                    data: [4.7, 5.5, 6.8, 8.3, 9.3],
+                    borderColor: '#ffffff',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                scales: {
+                    y: { beginAtZero: true, max: 10 }
+                },
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return `Діабет: ${context.raw}%`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    </script>
