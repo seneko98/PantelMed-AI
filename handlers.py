@@ -9,15 +9,17 @@ import logging
 from datetime import datetime
 from bson import ObjectId
 from ai_recommendations import AIRecommendations
+from womens_health import WomensHealthSystem
 
 handlers_bp = Blueprint('handlers', __name__)
 logger = logging.getLogger(__name__)
 
 # Конфігурація
 db = Database("mongodb+srv://Vlad:manreds7@cluster0.d0qnz.mongodb.net/pantelmed?retryWrites=true&w=majority&appName=Cluster0")
-openai_client = OpenAI(api_key="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")  
+openai_client = OpenAI(api_key="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")
 medical_knowledge = MedicalCore
-ai_recommendations = AIRecommendations(openai_client.api_key)  # Інтеграція AI
+ai_recommendations = AIRecommendations(openai_client.api_key)
+womens_health_system = WomensHealthSystem()
 
 @handlers_bp.route('/api/handlers/analyze_results', methods=['POST'])
 def analyze_results():
@@ -29,7 +31,6 @@ def analyze_results():
         if not user_id or not results:
             return jsonify({"error": "Потрібні user_id і results"}), 400
 
-        # Нормалізація даних
         normalized_results = {}
         for test_name, value_data in results.items():
             if isinstance(value_data, dict) and "value" in value_data and "unit" in value_data:
@@ -37,17 +38,16 @@ def analyze_results():
             else:
                 normalized_results[test_name] = {"value": float(value_data), "unit": "г/л"}
 
-        # Інтерпретація через blood_interpreter
         interpretation = interpret_lab_results(normalized_results)
-
-        # AI-аналіз через GPT-4o Mini з інтеграцією ai_recommendations
         recommendations = ai_recommendations.get_recommendations(normalized_results)
+        womens_recommendations = womens_health_system.get_recommendations(normalized_results) if any(k.lower() in ["estradiol", "prolactin"] for k in normalized_results) else {}
 
         db.insert_document("lab_results", {
             "user_id": user_id,
             "results": normalized_results,
             "interpretation": interpretation,
             "ai_recommendations": recommendations,
+            "womens_recommendations": womens_recommendations,
             "created_at": datetime.utcnow()
         })
 
@@ -56,7 +56,8 @@ def analyze_results():
             "user_id": user_id,
             "results": normalized_results,
             "interpretation": interpretation,
-            "ai_recommendations": recommendations
+            "ai_recommendations": recommendations,
+            "womens_recommendations": womens_recommendations
         })
 
     except Exception as e:
@@ -69,7 +70,7 @@ def send_notification():
         data = request.get_json()
         user_id = data.get('user_id')
         message = data.get('message')
-        notification_type = data.get('type')  # order, payment, feedback
+        notification_type = data.get('type')
 
         if not user_id or not message or not notification_type:
             return jsonify({"error": "user_id, message і type обов'язкові"}), 400
@@ -86,7 +87,6 @@ def send_notification():
         }
         db.insert_document("notifications", notification)
 
-        # Надсилання сповіщення
         if user.get("telegram_id"):
             send_telegram_notification(user["telegram_id"], message)
         if user.get("viber_id"):
@@ -136,17 +136,12 @@ def womens_health():
         lab_results = db.find_document("lab_results", {"user_id": user_id})
         results = lab_results.get("results", {}) if lab_results else {}
 
-        # Жіночі + загальні рекомендації з AI
-        womens_knowledge = medical_knowledge.womens_health
-        general_knowledge = {k: v for k, v in medical_knowledge.supplements_database.items() if k not in womens_knowledge}
-        prompt = f"Консультація для жінки {user_id}. Аналізи: {results}. Запит: {query}. Використовуй жіночі дані: {womens_knowledge} і загальні: {general_knowledge}. Дай рекомендації."
+        womens_recommendations = womens_health_system.get_recommendations(results)
+        prompt = f"Консультація для жінки {user_id}. Аналізи: {results}. Запит: {query}. Використовуй жіночі дані: {womens_health_system.estradiol_assessment}. Дай рекомендації."
         response = openai_client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}])
         answer = response.choices[0].message.content
 
-        # Додати AI-рекомендації
-        recommendations = ai_recommendations.get_recommendations(results)
-
-        return jsonify({"status": "success", "user_id": user_id, "query": query, "answer": answer, "ai_recommendations": recommendations})
+        return jsonify({"status": "success", "user_id": user_id, "query": query, "answer": answer, "womens_recommendations": womens_recommendations})
 
     except Exception as e:
         logger.error(f"Error in womens_health: {str(e)}")
