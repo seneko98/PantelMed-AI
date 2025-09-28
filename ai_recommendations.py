@@ -5,6 +5,7 @@ import logging
 import asyncio
 from medical_knowledge import MedicalCore
 from custom_recommendations import get_custom_recommendations
+from anti_aging import AntiAgingHandler
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ class AIRecommendations:
         self.api_key = api_key
         self.medical_knowledge = MedicalCore
         self.custom_recommendations = get_custom_recommendations()
+        self.anti_aging_handler = AntiAgingHandler()
 
     async def _fetch_pubmed(self, query: str, api_key: str) -> List[Dict]:
         params = {
@@ -39,16 +41,17 @@ class AIRecommendations:
         return [item for sublist in results for item in sublist]
 
     def get_recommendations(self, lab_results: Dict[str, Dict[str, float | str]]) -> Dict:
-        """Генерація рекомендацій з пробігом по базовим знанням, ручним вставкам і PubMed."""
-        base_knowledge = self.medical_knowledge.supplements_database  # Пробіг по базовим знанням
-        custom = self.custom_recommendations  # Пробіг по ручним вставкам
-        pubmed_results = asyncio.run(self.research_pubmed(f"health recommendations {list(lab_results.keys())[0]}"))  # Ресьорч PubMed
+        base_knowledge = self.medical_knowledge.supplements_database
+        custom = self.custom_recommendations
+        anti_aging = self.anti_aging_handler.process("Анти-ейджинг рекомендації", None, lab_results)
+        pubmed_results = asyncio.run(self.research_pubmed(f"anti-aging recommendations {list(lab_results.keys())[0]}"))
 
         prompt = f"""
         Ти медичний експерт із біохакінгу та антиейджингу. Інтерпретуй результати аналізів:
         {lab_results}
         Використовуй базові знання: {base_knowledge}
         Ручні вставки: {custom}
+        Анти-ейджинг: {anti_aging}
         PubMed-дослідження: {pubmed_results}
         Дай рекомендації щодо БАДів, тренувань, дієт, процедур або аналізів. Формат: JSON з ключами 'supplements', 'training', 'diet', 'procedures', 'additional_tests'.
         """
