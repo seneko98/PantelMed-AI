@@ -8,14 +8,16 @@ from openai import OpenAI
 import logging
 from datetime import datetime
 from bson import ObjectId
+from ai_recommendations import AIRecommendations
 
 handlers_bp = Blueprint('handlers', __name__)
 logger = logging.getLogger(__name__)
 
 # Конфігурація
 db = Database("mongodb+srv://Vlad:manreds7@cluster0.d0qnz.mongodb.net/pantelmed?retryWrites=true&w=majority&appName=Cluster0")
-openai_client = OpenAI(api_key="your_api_key_here")  # Placeholder
+openai_client = OpenAI(api_key="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")  
 medical_knowledge = MedicalCore
+ai_recommendations = AIRecommendations(openai_client.api_key)  # Інтеграція AI
 
 @handlers_bp.route('/api/handlers/analyze_results', methods=['POST'])
 def analyze_results():
@@ -38,16 +40,14 @@ def analyze_results():
         # Інтерпретація через blood_interpreter
         interpretation = interpret_lab_results(normalized_results)
 
-        # AI-аналіз через GPT-4o Mini
-        prompt = f"Аналізуй медичні дані: {normalized_results}. Використовуй базу: {medical_knowledge.supplements_database}. Дай рекомендації."
-        response = openai_client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}])
-        ai_recommendations = response.choices[0].message.content
+        # AI-аналіз через GPT-4o Mini з інтеграцією ai_recommendations
+        recommendations = ai_recommendations.get_recommendations(normalized_results)
 
         db.insert_document("lab_results", {
             "user_id": user_id,
             "results": normalized_results,
             "interpretation": interpretation,
-            "ai_recommendations": ai_recommendations,
+            "ai_recommendations": recommendations,
             "created_at": datetime.utcnow()
         })
 
@@ -56,7 +56,7 @@ def analyze_results():
             "user_id": user_id,
             "results": normalized_results,
             "interpretation": interpretation,
-            "ai_recommendations": ai_recommendations
+            "ai_recommendations": recommendations
         })
 
     except Exception as e:
@@ -69,27 +69,31 @@ def send_notification():
         data = request.get_json()
         user_id = data.get('user_id')
         message = data.get('message')
-        channel = data.get('channel', 'telegram')  # За замовчуванням Telegram
+        notification_type = data.get('type')  # order, payment, feedback
 
-        if not user_id or not message:
-            return jsonify({"error": "Потрібні user_id і message"}), 400
+        if not user_id or not message or not notification_type:
+            return jsonify({"error": "user_id, message і type обов'язкові"}), 400
 
-        if channel == 'telegram':
-            send_telegram_notification(user_id, message)
-        elif channel == 'viber':
-            send_viber_notification(user_id, message)
-        else:
-            return jsonify({"error": "Непідтримуваний канал"}), 400
+        user = db.find_document("users", {"telegram_id": user_id})
+        if not user:
+            return jsonify({"error": "Користувача не знайдено"}), 404
 
-        db.insert_document("notifications", {
+        notification = {
             "user_id": user_id,
-            "type": "notification",
+            "type": notification_type,
             "message": message,
-            "channel": channel,
             "created_at": datetime.utcnow()
-        })
+        }
+        db.insert_document("notifications", notification)
 
-        return jsonify({"status": "success", "message": "Сповіщення відправлено"})
+        # Надсилання сповіщення
+        if user.get("telegram_id"):
+            send_telegram_notification(user["telegram_id"], message)
+        if user.get("viber_id"):
+            send_viber_notification(user["viber_id"], message)
+
+        logger.info(f"Notification sent to user {user_id}: {message}")
+        return jsonify({"status": "success", "message": "Сповіщення надіслано"})
 
     except Exception as e:
         logger.error(f"Error in send_notification: {str(e)}")
@@ -102,12 +106,12 @@ def subscription_check():
         user_id = data.get('user_id')
 
         if not user_id:
-            return jsonify({"error": "Потрібен user_id"}), 400
+            return jsonify({"error": "user_id обов'язковий"}), 400
 
-        subscription = db.find_document("users", {"user_id": user_id, "subscription_active": True})
+        subscription = db.find_document("user_profiles", {"user_id": user_id, "subscription_active": True})
         is_active = bool(subscription)
 
-        return jsonify({"status": "success", "user_id": user_id, "subscription_active": is_active})
+        return jsonify({"status": "success", "subscription_active": is_active})
 
     except Exception as e:
         logger.error(f"Error in subscription_check: {str(e)}")
@@ -121,7 +125,7 @@ def womens_health():
         query = data.get('query', 'рекомендації для жінок')
 
         if not user_id:
-            return jsonify({"error": "Потрібен user_id"}), 400
+            return jsonify({"error": "user_id обов'язковий"}), 400
 
         user_profile = db.find_document("user_profiles", {"user_id": user_id})
         gender = user_profile.get("gender", "unknown") if user_profile else "unknown"
@@ -132,14 +136,17 @@ def womens_health():
         lab_results = db.find_document("lab_results", {"user_id": user_id})
         results = lab_results.get("results", {}) if lab_results else {}
 
-        # Жіночі + загальні рекомендації
+        # Жіночі + загальні рекомендації з AI
         womens_knowledge = medical_knowledge.womens_health
         general_knowledge = {k: v for k, v in medical_knowledge.supplements_database.items() if k not in womens_knowledge}
         prompt = f"Консультація для жінки {user_id}. Аналізи: {results}. Запит: {query}. Використовуй жіночі дані: {womens_knowledge} і загальні: {general_knowledge}. Дай рекомендації."
         response = openai_client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": prompt}])
         answer = response.choices[0].message.content
 
-        return jsonify({"status": "success", "user_id": user_id, "query": query, "answer": answer})
+        # Додати AI-рекомендації
+        recommendations = ai_recommendations.get_recommendations(results)
+
+        return jsonify({"status": "success", "user_id": user_id, "query": query, "answer": answer, "ai_recommendations": recommendations})
 
     except Exception as e:
         logger.error(f"Error in womens_health: {str(e)}")
