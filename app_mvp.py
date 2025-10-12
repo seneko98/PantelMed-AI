@@ -40,7 +40,7 @@ class CourseSelection(BaseModel):
 class ProfileUpdate(BaseModel):
     weight: float
     user_id: str
-    goals: dict = {}  # Оновлено для структури short_term, mid_term, long_term
+    goals: dict = {}  # Структура short_term, mid_term, long_term
 
 class NotificationSubscription(BaseModel):
     user_id: str
@@ -57,9 +57,11 @@ class AnalysisInput(BaseModel):
 
 class PaymentInput(BaseModel):
     user_id: str
-    item: str  # "interaction" або "analysis"
-    amount: int  # Кількість запитів/аналізів для докупки
-    usdt_address: str  # Адреса для оплати USDT
+    item: str  # "interaction_package_30" або "analysis_package_30"
+    amount: int = 1  # Кількість пакетів
+
+class ResetLimits(BaseModel):
+    user_id: str
 
 @app.post("/api/auth/register")
 async def register(user_id: str, email: str):
@@ -229,33 +231,6 @@ async def upload_analyses(analysis: AnalysisInput):
 
     return {"message": "Analyses uploaded successfully"}
 
-@app.get("/api/balance")
-async def get_balance(user_id: str):
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-
-    security_agent.check_user(user_id)
-
-    user_data = former_user.get_user_data(user_id)
-    interactions = former_user.get_interaction_count(user_id)
-    analyses = former_user.get_analysis_count(user_id)
-    subscription_end = user_data.get("subscription_end", datetime.datetime.utcnow().isoformat())
-    remaining_interactions = 40 if (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(subscription_end)).days < 150 else 15
-    remaining_analyses = max(0, 5 - analyses)
-
-    return {
-        "interactions": {
-            "used": interactions,
-            "remaining": max(0, remaining_interactions - interactions),
-            "limit": 40 if (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(subscription_end)).days < 150 else 15
-        },
-        "analyses": {
-            "used": analyses,
-            "remaining": remaining_analyses,
-            "limit": 5
-        }
-    }
-
 @app.post("/api/payments")
 async def process_payment(payment: PaymentInput):
     if not payment.user_id:
@@ -263,12 +238,8 @@ async def process_payment(payment: PaymentInput):
 
     security_agent.check_user(payment.user_id)
 
-    if payment.item not in ["interaction", "analysis"]:
-        raise HTTPException(status_code=400, detail="Invalid item: must be 'interaction' or 'analysis'")
-
-    # Заглушка для onramper
-    payment_amount = payment.amount * 2.6  # 2.6 USDT за запит/аналіз (тестова ціна)
-    # Реальна інтеграція з onramper API буде додана пізніше
+    # Заглушка для onramper (2.6 USDT за пакет 30 запитів)
+    payment_amount = payment.amount * 2.6  # 2.6 USDT за пакет
     logger_agent.log_request(payment.user_id, "/api/payments", payment_amount)
 
     # Оновлення лімітів
@@ -281,23 +252,62 @@ async def process_payment(payment: PaymentInput):
             "date": datetime.datetime.utcnow().isoformat()
         }]
     }
-    if payment.item == "interaction":
-        update_data["interaction_limit"] = user_data.get("interaction_limit", 40) + payment.amount
-    elif payment.item == "analysis":
-        update_data["analysis_limit"] = user_data.get("analysis_limit", 5) + payment.amount
+    if payment.item == "interaction_package_30":
+        update_data["interaction_limit"] = user_data.get("interaction_limit", 40) + payment.amount * 30
+    elif payment.item == "analysis_package_30":
+        update_data["analysis_limit"] = user_data.get("analysis_limit", 5) + payment.amount * 30
 
     former_user.update_user_data(payment.user_id, update_data)
 
-    return {"message": f"Payment of {payment_amount} USDT for {payment.amount} {payment.item}(s) processed successfully."}
+    return {"message": f"Payment of {payment_amount} USDT for {payment.amount} package(s) of 30 {payment.item} processed successfully."}
 
-@app.get("/api/health")
-async def health_check():
-    return {"status": "healthy", "version": "1.0.0"}
+@app.get("/api/balance")
+async def get_balance(user_id: str):
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
 
-@app.get("/api/wearable")
-async def wearable_data():
-    return {"message": "Wearable integration not implemented yet."}
+    security_agent.check_user(user_id)
 
-@app.get("/api/web3_login")
-async def web3_login():
-    return {"message": "Web3 login not implemented yet."}
+    user_data = former_user.get_user_data(user_id)
+    interactions = former_user.get_interaction_count(user_id)
+    analyses = former_user.get_analysis_count(user_id)
+    subscription_end = user_data.get("subscription_end", datetime.datetime.utcnow().isoformat())
+    remaining_interactions = 40 if (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(subscription_end)).days < 150 else 15
+    remaining_interactions = max(0, remaining_interactions - interactions)
+    remaining_analyses = max(0, 5 - analyses)
+
+    return {
+        "interactions": {
+            "used": interactions,
+            "remaining": remaining_interactions,
+            "limit": 40 if (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(subscription_end)).days < 150 else 15
+        },
+        "analyses": {
+            "used": analyses,
+            "remaining": remaining_analyses,
+            "limit": 5
+        }
+    }
+
+@app.post("/api/reset_limits")
+async def reset_limits(reset: ResetLimits):
+    if not reset.user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+
+    security_agent.check_user(reset.user_id)
+
+    user_data = former_user.get_user_data(reset.user_id)
+    interaction_limit = user_data.get("interaction_limit", 40)
+    analysis_limit = user_data.get("analysis_limit", 5)
+    used_interactions = former_user.get_interaction_count(reset.user_id)
+    used_analyses = former_user.get_analysis_count(reset.user_id)
+
+    # Додаємо залишок до балансу (якщо не використав)
+    new_interaction_limit = (interaction_limit - used_interactions) + 15
+    new_analysis_limit = (analysis_limit - used_analyses) + 1  # 1/місяць, але накопичується
+    former_user.update_user_data(reset.user_id, {
+        "interaction_limit": new_interaction_limit,
+        "analysis_limit": new_analysis_limit
+    })
+
+    return {"message": "Limits reset successfully"}
