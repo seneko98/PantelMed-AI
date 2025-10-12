@@ -6,8 +6,10 @@ from former_user import FormerUser
 from clinical_agent import ClinicalAgent
 from security_agent import SecurityAgent
 from steroids import SteroidAgent
+from logger_agent import LoggerAgent
 import openai
 import json
+import datetime
 
 app = FastAPI()
 ui_agent = UIAgent()
@@ -16,6 +18,7 @@ former_user = FormerUser()
 clinical_agent = ClinicalAgent()
 security_agent = SecurityAgent()
 steroid_agent = SteroidAgent()
+logger_agent = LoggerAgent()
 
 # Налаштування OpenAI (ключ із .env у майбутньому)
 openai.api_key = "your-openai-api-key-here"
@@ -37,7 +40,7 @@ class CourseSelection(BaseModel):
 class ProfileUpdate(BaseModel):
     weight: float
     user_id: str
-    goals: list = []
+    goals: dict = {}  # Оновлено для структури short_term, mid_term, long_term
 
 class NotificationSubscription(BaseModel):
     user_id: str
@@ -51,6 +54,12 @@ class ProgressInput(BaseModel):
 class AnalysisInput(BaseModel):
     user_id: str
     analyses: list  # Список: [{"type": "testosterone", "value": 300, "date": "2025-10-12"}]
+
+class PaymentInput(BaseModel):
+    user_id: str
+    item: str  # "interaction" або "analysis"
+    amount: int  # Кількість запитів/аналізів для докупки
+    usdt_address: str  # Адреса для оплати USDT
 
 @app.post("/api/auth/register")
 async def register(user_id: str, email: str):
@@ -72,9 +81,9 @@ async def handle_user_input(user_input: UserInput):
     user_data = former_user.get_user_data(user_input.user_id)
     subscription_end = user_data.get("subscription_end", datetime.datetime.utcnow().isoformat())
     if interactions >= 40 and (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(subscription_end)).days < 150:
-        raise HTTPException(status_code=402, detail="Interaction limit exceeded (40/month). Upgrade your plan.")
+        raise HTTPException(status_code=402, detail="Interaction limit exceeded (40/month). Upgrade your plan via /api/payments.")
     elif interactions >= 15:
-        raise HTTPException(status_code=402, detail="Interaction limit exceeded (15/month after initial 40). Upgrade your plan.")
+        raise HTTPException(status_code=402, detail="Interaction limit exceeded (15/month after initial 40). Upgrade your plan via /api/payments.")
 
     validated_input = ui_agent.validate(user_input.text, user_input.language)
     if not validated_input["valid"]:
@@ -84,6 +93,7 @@ async def handle_user_input(user_input: UserInput):
         validated_input["history"] = user_data.get("history", [])
 
     response = orchestrator.process(validated_input)
+    logger_agent.log_request(user_input.user_id, "/api/user_input", logger_agent.token_usage_per_request)
 
     former_user.update_user_data(user_input.user_id, {
         "history": validated_input["history"] + [{"input": user_input.text, "response": response, "type": "query"}]
@@ -119,13 +129,15 @@ async def get_recommendations(user_input: UserInput):
     user_data = former_user.get_user_data(user_input.user_id)
     subscription_end = user_data.get("subscription_end", datetime.datetime.utcnow().isoformat())
     if interactions >= 40 and (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(subscription_end)).days < 150:
-        raise HTTPException(status_code=402, detail="Interaction limit exceeded (40/month). Upgrade your plan.")
+        raise HTTPException(status_code=402, detail="Interaction limit exceeded (40/month). Upgrade your plan via /api/payments.")
     elif interactions >= 15:
-        raise HTTPException(status_code=402, detail="Interaction limit exceeded (15/month after initial 40). Upgrade your plan.")
+        raise HTTPException(status_code=402, detail="Interaction limit exceeded (15/month after initial 40). Upgrade your plan via /api/payments.")
 
     user_data = former_user.get_user_data(user_input.user_id)
     prompt = f"На основі історії {json.dumps(user_data.get('history', []))} сформуй рекомендації. Якщо користувач не дотримувався рекомендацій, додай: 'БАДи працюють, коли ганяєш кров — почни з тренувань і дієти.'"
     response = clinical_agent.analyze(prompt, user_data.get("history", []))
+    logger_agent.log_request(user_input.user_id, "/api/recommendations", logger_agent.token_usage_per_request)
+
     return ui_agent.format_response(response, user_input.language)
 
 @app.post("/api/course")
@@ -243,6 +255,40 @@ async def get_balance(user_id: str):
             "limit": 5
         }
     }
+
+@app.post("/api/payments")
+async def process_payment(payment: PaymentInput):
+    if not payment.user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+
+    security_agent.check_user(payment.user_id)
+
+    if payment.item not in ["interaction", "analysis"]:
+        raise HTTPException(status_code=400, detail="Invalid item: must be 'interaction' or 'analysis'")
+
+    # Заглушка для onramper
+    payment_amount = payment.amount * 2.6  # 2.6 USDT за запит/аналіз (тестова ціна)
+    # Реальна інтеграція з onramper API буде додана пізніше
+    logger_agent.log_request(payment.user_id, "/api/payments", payment_amount)
+
+    # Оновлення лімітів
+    user_data = former_user.get_user_data(payment.user_id)
+    update_data = {
+        "payments": user_data.get("payments", []) + [{
+            "item": payment.item,
+            "amount": payment.amount,
+            "usdt_address": payment.usdt_address,
+            "date": datetime.datetime.utcnow().isoformat()
+        }]
+    }
+    if payment.item == "interaction":
+        update_data["interaction_limit"] = user_data.get("interaction_limit", 40) + payment.amount
+    elif payment.item == "analysis":
+        update_data["analysis_limit"] = user_data.get("analysis_limit", 5) + payment.amount
+
+    former_user.update_user_data(payment.user_id, update_data)
+
+    return {"message": f"Payment of {payment_amount} USDT for {payment.amount} {payment.item}(s) processed successfully."}
 
 @app.get("/api/health")
 async def health_check():
