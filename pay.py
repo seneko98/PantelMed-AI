@@ -1,128 +1,103 @@
-from flask import Blueprint, request, jsonify
-from flask_cors import cross_origin
-from datetime import datetime
+from fastapi import HTTPException
+from pydantic import BaseModel
+from subscription_manager import SubscriptionManager
+from former_user import FormerUser
+from logger_agent import LoggerAgent
+import datetime
 from typing import Dict, Optional
-import logging
-from db import Database
 from bson import ObjectId
 
-logger = logging.getLogger(__name__)
-
-pay_bp = Blueprint('pay', __name__, url_prefix='/api/pay')
+subscription_manager = SubscriptionManager()
+former_user = FormerUser()
+logger_agent = LoggerAgent()
 
 # Конфігурація
 TRON_WALLET = "TQeHa8VdwfyybxtioW4ggbnDC1rbWe8nFa"
-MODULE_PRICE = 2.6  # USD для всіх пакетів/модулів (тестовий режим)
+MODULE_PRICE = 2.6  # USD (USDT) за пакет із 30 запитів/аналізів (тестовий режим)
+PACKAGE_SIZE = 30  # Кількість запитів/аналізів у пакеті
 
-@pay_bp.route('/create', methods=['POST'])
-@cross_origin()
-def create_payment():
-    """Створення платежу для пакета або модуля"""
-    try:
-        data = request.get_json()
-        user_id = data.get("user_id")
-        package_id = data.get("package_id")  # ID пакета з MongoDB
-        module = data.get("module")  # Наприклад, 'analyzer', 'consultation'
+class PaymentInput(BaseModel):
+    user_id: str
+    item: str  # "interaction", "analysis", "package", "module"
+    item_id: Optional[str] = None  # ID пакета або модуля (наприклад, "analyzer")
+    amount: int  # Кількість пакетів
+    usdt_address: str  # Адреса для оплати USDT
 
-        if not user_id:
-            return jsonify({"error": "user_id обов'язковий"}), 400
+class PaymentCheckInput(BaseModel):
+    user_id: str
+    payment_id: str  # ID платежу в MongoDB
 
-        db = Database("mongodb+srv://Vlad:manreds7@cluster0.d0qnz.mongodb.net/pantelmed?retryWrites=true&w=majority&appName=Cluster0")
+async def create_payment(payment: PaymentInput) -> Dict:
+    """Створює платіж для пакета або модуля (заглушка для onramper/TRON)."""
+    if payment.item not in ["interaction", "analysis", "package", "module"]:
+        raise HTTPException(status_code=400, detail="Invalid item: must be 'interaction', 'analysis', 'package', or 'module'")
+    if payment.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+
+    user_data = former_user.get_user_data(payment.user_id)
+    if not user_data:
+        raise HTTPException(status_code=404, detail="Користувача не знайдено")
+
+    # Визначаємо тип покупки
+    item_name = payment.item
+    amount_usdt = payment.amount * MODULE_PRICE
+    if payment.item in ["package", "module"]:
+        if not payment.item_id:
+            raise HTTPException(status_code=400, detail="Потрібно вказати item_id для package або module")
+        item_name = payment.item_id  # Наприклад, "analyzer" або "consultation"
+
+    # Збереження платежу
+    payment_data = {
+        "user_id": payment.user_id,
+        "item_type": payment.item,
+        "item_id": payment.item_id or payment.item,
+        "item_name": item_name,
+        "amount": amount_usdt,
+        "usdt_address": payment.usdt_address,
+        "payment_method": "crypto",
+        "status": "pending",
+        "date": datetime.datetime.utcnow().isoformat()
+    }
+    payment_id = former_user.users.insert_one(payment_data).inserted_id
+    logger_agent.log_request(payment.user_id, "create_payment", amount_usdt)
+
+    return {
+        "message": f"Payment of {amount_usdt} USDT for {payment.amount * PACKAGE_SIZE} {payment.item}(s) created",
+        "payment_id": str(payment_id)
+    }
+
+async def check_payment_status(check: PaymentCheckInput) -> Dict:
+    """Перевіряє статус платежу (заглушка для TRON)."""
+    payment = former_user.users.find_one({"_id": ObjectId(check.payment_id), "user_id": check.user_id})
+    if not payment:
+        raise HTTPException(status_code=404, detail="Платіж не знайдено")
+
+    # Заглушка для перевірки TRON-транзакції
+    payment_status = "pending"  # TODO: Реальна інтеграція з TRON
+    if payment_status == "success":
+        # Оновлення лімітів через subscription_manager
+        if payment["item_type"] in ["interaction", "analysis"]:
+            subscription_manager.update_limits(check.user_id, payment["item_type"], payment["amount"] * PACKAGE_SIZE)
+        # Оновлення модулів/пакетів
+        user_data = former_user.get_user_data(check.user_id)
+        update_data = {"subscription_active": True}
+        if payment["item_type"] == "package":
+            # Заглушка: припускаємо, що пакет містить модулі
+            update_data["active_modules"] = user_data.get("active_modules", []) + [payment["item_id"]]
+        elif payment["item_type"] == "module":
+            update_data["active_modules"] = user_data.get("active_modules", []) + [payment["item_id"]]
         
-        # Перевірка, чи існує користувач
-        user = db.find_document("users", {"telegram_id": user_id})
-        if not user:
-            return jsonify({"error": "Користувача не знайдено"}), 404
+        former_user.update_user_data(check.user_id, update_data)
+        former_user.users.update_one(
+            {"_id": ObjectId(check.payment_id)},
+            {"$set": {"status": "success"}}
+        )
+        logger_agent.log_subscription_event(check.user_id, "payment_success", f"Payment {check.payment_id} confirmed")
 
-        # Визначаємо, що оплачуємо
-        if package_id:
-            package = db.find_document("packages", {"_id": ObjectId(package_id)})
-            if not package:
-                return jsonify({"error": "Пакет не знайдено"}), 404
-            item_type = "package"
-            item_id = package_id
-            item_name = package["name"]
-            amount = package.get("price", MODULE_PRICE)
-        elif module:
-            item_type = "module"
-            item_id = module
-            item_name = module
-            amount = MODULE_PRICE
-        else:
-            return jsonify({"error": "Потрібно вказати package_id або module"}), 400
-
-        # Створюємо платіж (тільки крипто)
-        payment = {
-            "user_id": user_id,
-            "item_type": item_type,
-            "item_id": item_id,
-            "item_name": item_name,
-            "amount": amount,
-            "payment_method": "crypto",
-            "status": "pending",
-            "created_at": datetime.utcnow()
-        }
-        payment_id = db.collections["payments"].insert_one(payment).inserted_id
-
-        logger.info(f"Payment created: {payment_id} for user {user_id}, amount ${amount}")
-        return jsonify({
-            "status": "success",
-            "payment_id": str(payment_id),
-            "amount": amount,
-            "payment_method": "crypto",
-            "tron_wallet": TRON_WALLET
-        })
-
-    except Exception as e:
-        logger.error(f"Error in create_payment: {str(e)}")
-        return jsonify({"error": f"Помилка при створенні платежу: {str(e)}"}), 500
-
-@pay_bp.route('/status', methods=['GET'])
-@cross_origin()
-def check_payment_status():
-    """Перевірка статусу платежу з видачею преміум-доступу"""
-    try:
-        payment_id = request.args.get("payment_id")
-        if not payment_id:
-            return jsonify({"error": "payment_id обов'язковий"}), 400
-
-        db = Database("mongodb+srv://Vlad:manreds7@cluster0.d0qnz.mongodb.net/pantelmed?retryWrites=true&w=majority&appName=Cluster0")
-        payment = db.find_document("payments", {"_id": ObjectId(payment_id)})
-
-        if not payment:
-            return jsonify({"error": "Платіж не знайдено"}), 404
-
-        # Логіка перевірки крипто (заглушка, реалізуємо пізніше)
-        if payment["payment_method"] == "crypto":
-            # TODO: Перевірка транзакції в TRON
-            payment_status = "pending"  # Заглушка
-        else:
-            payment_status = payment["status"]
-
-        if payment_status == "success":
-            user_id = payment["user_id"]
-            # Оновлення преміум-доступу в user_profiles
-            db.update_document("user_profiles", {"user_id": user_id}, {"$set": {"subscription_active": True}})
-            # Оновлення модулів
-            if payment["item_type"] == "package":
-                db.collections["users"].update_one(
-                    {"telegram_id": user_id},
-                    {"$addToSet": {"active_modules": {"$each": db.find_document("packages", {"_id": ObjectId(payment["item_id"])})["modules"]}}}
-                )
-            else:
-                db.collections["users"].update_one(
-                    {"telegram_id": user_id},
-                    {"$addToSet": {"active_modules": payment["item_id"]}}
-                )
-
-        return jsonify({
-            "status": payment_status,
-            "payment_id": str(payment_id),
-            "item_name": payment["item_name"],
-            "amount": payment["amount"],
-            "subscription_active": payment_status == "success"
-        })
-
-    except Exception as e:
-        logger.error(f"Error in check_payment_status: {str(e)}")
-        return jsonify({"error": f"Помилка при перевірці статусу: {str(e)}"}), 500
+    return {
+        "status": payment_status,
+        "payment_id": check.payment_id,
+        "item_name": payment["item_name"],
+        "amount": payment["amount"],
+        "subscription_active": payment_status == "success"
+    }
