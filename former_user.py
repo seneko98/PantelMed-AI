@@ -12,10 +12,6 @@ class FormerUser:
         self.client = pymongo.MongoClient("mongodb://localhost:27017/")
         self.db = self.client["pantelmed"]
         self.users = self.db["users"]
-        self.interaction_limit = 40  # Початковий ліміт AI-запитів
-        self.analysis_limit = 5  # Початковий ліміт аналізів (5 за 5 місяців)
-        self.subscription_period = 150  # 5 місяців у днях
-        self.monthly_reset = 30  # Днів у місяці
 
     def get_user_data(self, user_id: str) -> Dict:
         """Отримує всі дані користувача (аналізи, історія проблем, курси, цілі)."""
@@ -24,13 +20,6 @@ class FormerUser:
 
     def update_user_data(self, user_id: str, data: Dict):
         """Оновлює профіль користувача (вага, цілі, історія, платежі)."""
-        current_data = self.get_user_data(user_id)
-        history = current_data.get("history", [])
-        query_interactions = [i for i in history if i.get("type") == "query"]
-        if len(query_interactions) >= current_data.get("interaction_balance", self.interaction_limit) and data.get("history", [{}])[0].get("type") == "query":
-            logger.warning(f"User {user_id} reached interaction limit")
-            raise HTTPException(status_code=402, detail="Interaction limit exceeded. Upgrade your plan via /api/payments.")
-
         self.users.update_one(
             {"user_id": user_id},
             {"$set": data, "$push": {"history": data["history"][-1] if data.get("history") else {}}},
@@ -55,12 +44,6 @@ class FormerUser:
 
     def add_analysis(self, user_id: str, analysis_type: str, value: float, date: str):
         """Додає результат аналізу (наприклад, testosterone: 300)."""
-        current_data = self.get_user_data(user_id)
-        analysis_count = current_data.get("analysis_count", 0)
-        if analysis_count >= current_data.get("analysis_limit", self.analysis_limit):
-            logger.warning(f"User {user_id} reached analysis limit")
-            raise HTTPException(status_code=402, detail="Analysis limit exceeded. Upgrade your plan via /api/payments.")
-
         self.users.update_one(
             {"user_id": user_id},
             {"$push": {"analyses": {"type": analysis_type, "value": value, "date": date}}},
@@ -106,22 +89,3 @@ class FormerUser:
         """Рахує кількість аналізів."""
         user_data = self.get_user_data(user_id)
         return user_data.get("analysis_count", 0)
-
-    def reset_interaction_limit(self, user_id: str):
-        """Скидає ліміт AI-запитів щомісяця, додаючи залишок."""
-        user_data = self.get_user_data(user_id)
-        current_interactions = self.get_interaction_count(user_id)
-        subscription_end = user_data.get("subscription_end", datetime.datetime.utcnow().isoformat())
-        months_passed = (datetime.datetime.utcnow() - datetime.datetime.fromisoformat(user_data.get("subscription_start", datetime.datetime.utcnow().isoformat()))).days / self.monthly_reset
-
-        # Залишок запитів додається до нового ліміту
-        remaining = max(0, user_data.get("interaction_balance", self.interaction_limit) - current_interactions)
-        new_limit = 15 if months_passed >= 1 else 40
-        new_balance = remaining + new_limit
-
-        self.users.update_one(
-            {"user_id": user_id},
-            {"$set": {"interaction_balance": new_balance, "last_reset": datetime.datetime.utcnow().isoformat()}},
-            upsert=True
-        )
-        logger.info(f"Interaction limit reset for user {user_id}: new balance {new_balance}")
