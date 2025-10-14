@@ -10,9 +10,9 @@ class LoggerAgent:
                             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         self.token_usage_per_request = 10000  # Заглушка для витрат токенів OpenAI
 
-    def log_request(self, user_id: str, endpoint: str, tokens_used: int):
-        """Логує запит користувача та витрачені токени."""
-        logger.info(f"User {user_id} accessed {endpoint}, tokens used: {tokens_used}")
+    def log_request(self, user_id: str, endpoint: str, tokens_used: float):
+        """Логує запит користувача та витрачені токени/платежі."""
+        logger.info(f"User {user_id} accessed {endpoint}, tokens/paid amount: {tokens_used}")
 
     def get_token_usage(self, user_id: str) -> Dict:
         """Повертає статистику витрат токенів (заглушка)."""
