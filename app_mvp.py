@@ -39,6 +39,11 @@ class TestInput(BaseModel):
 class CourseSelection(BaseModel):
     course_name: str
     action: str  # "select" або "start"
+    supplements: List[str] = None  # ID БАДів для курсу
+
+class SupplementStackInput(BaseModel):
+    user_id: str
+    supplement_ids: List[str]
 
 class ProfileUpdate(BaseModel):
     weight: float
@@ -60,7 +65,7 @@ class AnalysisInput(BaseModel):
 
 class PaymentInput(BaseModel):
     user_id: str
-    item: str  # "interaction", "analysis", "package", "module"
+    item: str  # "interaction", "analysis", "package", "module", "supplement_plan"
     item_id: str | None = None  # ID пакета або модуля
     amount: int  # Кількість пакетів (1 пакет = 30 запитів/аналізів)
     usdt_address: str  # Адреса для оплати USDT
@@ -97,6 +102,7 @@ async def handle_user_input(user_input: UserInput):
     user_data = former_user.get_user_data(user_input.user_id)
     if user_data:
         validated_input["history"] = user_data.get("history", [])
+        validated_input["user_id"] = user_input.user_id
 
     response = orchestrator.process(validated_input)
     logger_agent.log_request(user_input.user_id, "/api/user_input", logger_agent.token_usage_per_request)
@@ -132,8 +138,13 @@ async def get_recommendations(user_input: UserInput):
     subscription_manager.check_interaction_limit(user_input.user_id)
 
     user_data = former_user.get_user_data(user_input.user_id)
-    prompt = f"На основі історії {json.dumps(user_data.get('history', []))} сформуй рекомендації. Якщо користувач не дотримувався рекомендацій, додай: 'БАДи працюють, коли ганяєш кров — почни з тренувань і дієти.'"
-    response = clinical_agent.analyze(prompt, user_data.get("history", []))
+    validated_input = {
+        "text": user_input.text,
+        "history": user_data.get("history", []),
+        "user_id": user_input.user_id
+    }
+
+    response = orchestrator.process(validated_input)
     logger_agent.log_request(user_input.user_id, "/api/recommendations", logger_agent.token_usage_per_request)
 
     return ui_agent.format_response(response, user_input.language)
@@ -149,10 +160,20 @@ async def select_course(course: CourseSelection, user_id: str):
         result = former_user.record_course(user_id, course.course_name, "select")
         return {"message": result["message"]}
     elif course.action == "start":
-        result = former_user.record_course(user_id, course.course_name, "start")
-        recommendations = steroid_agent.get_recommendations(course.course_name)
-        return {"message": result["message"], "recommendations": recommendations}
+        result = steroid_agent.start_course(user_id, course.course_name, course.supplements)
+        return {"message": result["message"]}
     raise HTTPException(status_code=400, detail="Invalid action")
+
+@app.post("/api/supplements")
+async def start_supplement_stack(stack: SupplementStackInput):
+    if not stack.user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+
+    security_agent.check_user(stack.user_id)
+    subscription_manager.check_supplement_plan_limit(stack.user_id)
+
+    result = steroid_agent.start_supplement_stack(stack.user_id, stack.supplement_ids)
+    return {"message": result["message"]}
 
 @app.post("/api/profile")
 async def update_profile(profile: ProfileUpdate):
