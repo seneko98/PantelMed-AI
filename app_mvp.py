@@ -8,6 +8,7 @@ from security_agent import SecurityAgent
 from steroids import SteroidAgent
 from logger_agent import LoggerAgent
 from subscription_manager import SubscriptionManager
+from pay import create_payment, check_payment_status
 import openai
 import json
 import datetime
@@ -59,9 +60,14 @@ class AnalysisInput(BaseModel):
 
 class PaymentInput(BaseModel):
     user_id: str
-    item: str  # "interaction" або "analysis"
+    item: str  # "interaction", "analysis", "package", "module"
+    item_id: str | None = None  # ID пакета або модуля
     amount: int  # Кількість пакетів (1 пакет = 30 запитів/аналізів)
     usdt_address: str  # Адреса для оплати USDT
+
+class PaymentCheckInput(BaseModel):
+    user_id: str
+    payment_id: str  # ID платежу
 
 @app.post("/api/auth/register")
 async def register(user_id: str, email: str):
@@ -234,30 +240,15 @@ async def process_payment(payment: PaymentInput):
         raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
 
     security_agent.check_user(payment.user_id)
+    return await create_payment(payment)
 
-    if payment.item not in ["interaction", "analysis"]:
-        raise HTTPException(status_code=400, detail="Invalid item: must be 'interaction' or 'analysis'")
-    if payment.amount <= 0:
-        raise HTTPException(status_code=400, detail="Amount must be positive")
+@app.post("/api/payments/check")
+async def check_payment(check: PaymentCheckInput):
+    if not check.user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
 
-    # Заглушка для onramper: 1 пакет = 30 запитів/аналізів за 2.6 USDT
-    package_size = 30
-    payment_amount = payment.amount * 2.6  # Загальна сума в USDT
-    logger_agent.log_request(payment.user_id, "/api/payments", payment_amount)
-
-    # Оновлення лімітів через subscription_manager
-    subscription_manager.update_limits(payment.user_id, payment.item, payment.amount * package_size)
-
-    former_user.update_user_data(payment.user_id, {
-        "payments": former_user.get_user_data(payment.user_id).get("payments", []) + [{
-            "item": payment.item,
-            "amount": payment.amount * package_size,
-            "usdt_address": payment.usdt_address,
-            "date": datetime.datetime.utcnow().isoformat()
-        }]
-    })
-
-    return {"message": f"Payment of {payment_amount} USDT for {payment.amount * package_size} {payment.item}(s) processed successfully."}
+    security_agent.check_user(check.user_id)
+    return await check_payment_status(check)
 
 @app.post("/api/reset_limits")
 async def reset_limits(user_id: str):
