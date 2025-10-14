@@ -19,7 +19,7 @@ class FormerUser:
         return user_data if user_data else {}
 
     def update_user_data(self, user_id: str, data: Dict):
-        """Оновлює профіль користувача (вага, цілі, історія, платежі)."""
+        """Оновлює профіль користувача (вага, цілі, історія, платежі, стеки)."""
         self.users.update_one(
             {"user_id": user_id},
             {"$set": data, "$push": {"history": data["history"][-1] if data.get("history") else {}}},
@@ -79,6 +79,18 @@ class FormerUser:
         logger.info(f"Course {course_name} {action} recorded for user {user_id}")
 
         return {"message": f"Курс {course_name} {action} успішно записано."}
+
+    def record_supplement_stack(self, user_id: str, supplements: List[Dict], schedule: List[Dict]):
+        """Зберігає стек БАДів і розклад сповіщень."""
+        self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {
+                "active_supplements": supplements,
+                "notification_schedule": schedule
+            }},
+            upsert=True
+        )
+        logger.info(f"Supplement stack and schedule recorded for user {user_id}")
 
     def get_interaction_count(self, user_id: str) -> int:
         """Рахує кількість AI-взаємодій (тести/інтерпретація не рахуються)."""
