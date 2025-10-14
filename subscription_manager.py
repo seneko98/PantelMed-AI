@@ -11,6 +11,7 @@ class SubscriptionManager:
         self.former_user = FormerUser()
         self.interaction_limit = 40  # Початковий ліміт AI-запитів
         self.analysis_limit = 5  # Ліміт аналізів (5 за 5 місяців)
+        self.supplement_plan_limit = 3  # Ліміт AI-підбору стеків
         self.subscription_period = 150  # 5 місяців у днях
         self.monthly_reset = 30  # Днів у місяці
 
@@ -34,6 +35,16 @@ class SubscriptionManager:
             raise HTTPException(status_code=402, detail="Analysis limit exceeded. Upgrade your plan via /api/payments.")
         return True
 
+    def check_supplement_plan_limit(self, user_id: str) -> bool:
+        """Перевіряє, чи не перевищено ліміт AI-підбору стеків."""
+        user_data = self.former_user.get_user_data(user_id)
+        plan_count = user_data.get("supplement_plan_count", 0)
+        plan_limit = user_data.get("supplement_plan_limit", self.supplement_plan_limit)
+        if plan_count >= plan_limit:
+            logger.warning(f"User {user_id} reached supplement plan limit")
+            raise HTTPException(status_code=402, detail="Supplement plan limit exceeded. Upgrade your plan via /api/payments.")
+        return True
+
     def reset_interaction_limit(self, user_id: str):
         """Скидає ліміт AI-запитів щомісяця, додаючи залишок."""
         user_data = self.former_user.get_user_data(user_id)
@@ -53,12 +64,14 @@ class SubscriptionManager:
         logger.info(f"Interaction limit reset for user {user_id}: new balance {new_balance}")
 
     def get_balance(self, user_id: str) -> Dict:
-        """Повертає баланс запитів і аналізів."""
+        """Повертає баланс запитів, аналізів і підбору стеків."""
         user_data = self.former_user.get_user_data(user_id)
         interactions = len([i for i in user_data.get("history", []) if i.get("type") == "query"])
         analyses = user_data.get("analysis_count", 0)
+        plans = user_data.get("supplement_plan_count", 0)
         interaction_balance = user_data.get("interaction_balance", self.interaction_limit)
         analysis_limit = user_data.get("analysis_limit", self.analysis_limit)
+        plan_limit = user_data.get("supplement_plan_limit", self.supplement_plan_limit)
 
         return {
             "interactions": {
@@ -70,6 +83,11 @@ class SubscriptionManager:
                 "used": analyses,
                 "remaining": max(0, analysis_limit - analyses),
                 "limit": analysis_limit
+            },
+            "supplement_plans": {
+                "used": plans,
+                "remaining": max(0, plan_limit - plans),
+                "limit": plan_limit
             }
         }
 
@@ -81,5 +99,12 @@ class SubscriptionManager:
             update_data["interaction_balance"] = user_data.get("interaction_balance", self.interaction_limit) + amount
         elif item == "analysis":
             update_data["analysis_limit"] = user_data.get("analysis_limit", self.analysis_limit) + amount
+        elif item == "supplement_plan":
+            update_data["supplement_plan_limit"] = user_data.get("supplement_plan_limit", self.supplement_plan_limit) + amount
+            self.former_user.users.update_one(
+                {"user_id": user_id},
+                {"$inc": {"supplement_plan_count": 1}},
+                upsert=True
+            )
         self.former_user.update_user_data(user_id, update_data)
         logger.info(f"Updated {item} limit for user {user_id}: added {amount}")
