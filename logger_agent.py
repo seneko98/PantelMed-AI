@@ -14,6 +14,10 @@ class LoggerAgent:
         """Логує запит користувача та витрачені токени/платежі."""
         logger.info(f"User {user_id} accessed {endpoint}, tokens/paid amount: {tokens_used}")
 
+    def log_subscription_event(self, user_id: str, event: str, details: str):
+        """Логує події підписки (скидання лімітів, оновлення)."""
+        logger.info(f"User {user_id} subscription event: {event}, details: {details}")
+
     def get_token_usage(self, user_id: str) -> Dict:
         """Повертає статистику витрат токенів (заглушка)."""
         return {
