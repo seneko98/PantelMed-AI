@@ -1,1271 +1,729 @@
-// КОМПЛЕКСНИЙ ІНТЕРПРЕТАТОР АНАЛІЗІВ
-// Версія 2.0 - Повна система аналізу симптомів + лабораторні показники
-// Для AI асистента PantelMed
+from typing import Dict, List
+from fastapi import HTTPException
+from security_agent import SecurityAgent
+from subscription_manager import SubscriptionManager
+from former_user import FormerUser
+from logger_agent import LoggerAgent
+import openai
+import json
 
-const COMPREHENSIVE_LAB_INTERPRETER = {
-  // ===========================================
-  // ПЕЧІНКОВІ ПОКАЗНИКИ
-  // ===========================================
-  liver_panel: {
-    category: 'Печінкові показники',
-    description: 'Оцінка функції печінки, детоксикації, жовчовиділення',
-    
-    tests: {
-      alt: {
-        name: 'АЛТ (аланінамінотрансфераза)',
-        units: 'Од/л',
-        reference_range: { min: 0, max: 40, optimal: '<25' },
-        symptom_connections: ['fatigue', 'abdominal_pain_right', 'bitter_mouth'],
-        interpretation: {
-          high: {
-            thresholds: { mild: 40, moderate: 80, severe: 120 },
-            description: 'Печінкове запалення (гепатит, токсичне ураження, стероїди)',
-            causes: [
-              'Алкогольне ураження',
-              'Медикаментозне ураження (стероїди, парацетамол)',
-              'Жирова інфільтрація печінки',
-              'Вірусні гепатити'
-            ],
-            immediate_actions: [
-              'Відміна гепатотоксичних препаратів',
-              'Виключення алкоголю',
-              'Консультація гастроентеролога при >2x норми'
-            ],
-            supplements: [
-              'NAC 600-1200 мг/день натще',
-              'TUDCA 250-500 мг після їжі',
-              'Розторопша 200-400 мг/день',
-              'Бурштинова кислота 500 мг зранку (обережно при гастриті)'
-            ],
-            recheck_period: '30-40 днів (гептрал знижує АЛТ/АСТ через цей період)'
-          }
-        }
-      },
-
-      ast: {
-        name: 'АСТ (аспартатамінотрансфераза)',
-        units: 'Од/л',
-        reference_range: { min: 0, max: 40, optimal: '<25' },
-        interpretation: {
-          high: {
-            description: 'Ураження печінки, серця або м\'язів',
-            ast_alt_ratio: {
-              '>2': 'Можливе алкогольне ураження печінки',
-              '<1': 'Більш характерно для неалкогольного ураження'
-            }
-          }
-        }
-      },
-
-      bilirubin_total: {
-        name: 'Білірубін загальний',
-        units: 'мкмоль/л',
-        reference_range: { min: 5, max: 20, optimal: '8-15' },
-        symptom_connections: ['fatigue', 'headache', 'decreased_appetite', 'yellow_sclera'],
-        interpretation: {
-          high: {
-            thresholds: { mild: 25, moderate: 40, severe: 60 },
-            description: 'Порушення жовчовиділення або синдром Жільбера',
-            differential_diagnosis: {
-              gilbert_syndrome: 'Підвищений загальний при нормальному прямому',
-              cholestasis: 'Підвищений прямий білірубін',
-              hemolysis: 'Підвищений непрямий білірубін'
+class BloodInterpreter:
+    def __init__(self):
+        self.security_agent = SecurityAgent()
+        self.subscription_manager = SubscriptionManager()
+        self.former_user = FormerUser()
+        self.logger_agent = LoggerAgent()
+        openai.api_key = "your-openai-api-key-here"
+        
+        # Комплексна база аналізів із blood_interpreter.txt
+        self.COMPREHENSIVE_LAB_INTERPRETER = {
+            # ===========================================
+            # ПЕЧІНКОВІ ПОКАЗНИКИ
+            # ===========================================
+            "liver_panel": {
+                "category": "Печінкові показники",
+                "description": "Оцінка функції печінки, детоксикації, жовчовиділення",
+                "tests": {
+                    "alt": {
+                        "name": "АЛТ (аланінамінотрансфераза)",
+                        "units": "Од/л",
+                        "reference_range": {"min": 0, "max": 40, "optimal": "<25"},
+                        "symptom_connections": ["fatigue", "abdominal_pain_right", "bitter_mouth"],
+                        "interpretation": {
+                            "high": {
+                                "thresholds": {"mild": 40, "moderate": 80, "severe": 120},
+                                "description": "Печінкове запалення (гепатит, токсичне ураження, стероїди)",
+                                "causes": [
+                                    "Алкогольне ураження",
+                                    "Медикаментозне ураження (стероїди, парацетамол)",
+                                    "Жирова інфільтрація печінки",
+                                    "Вірусні гепатити"
+                                ],
+                                "immediate_actions": [
+                                    "Відміна гепатотоксичних препаратів",
+                                    "Виключення алкоголю",
+                                    "Консультація гастроентеролога при >2x норми"
+                                ],
+                                "supplements": [
+                                    "NAC 600-1200 мг/день натще",
+                                    "TUDCA 250-500 мг після їжі",
+                                    "Розторопша 200-400 мг/день",
+                                    "Бурштинова кислота 500 мг зранку (обережно при гастриті)"
+                                ],
+                                "recheck_period": "30-40 днів"
+                            }
+                        }
+                    },
+                    "ast": {
+                        "name": "АСТ (аспартатамінотрансфераза)",
+                        "units": "Од/л",
+                        "reference_range": {"min": 0, "max": 40, "optimal": "<20"},
+                        "symptom_connections": ["fatigue", "muscle_pain", "yellow_skin"],
+                        "interpretation": {
+                            "high": {
+                                "thresholds": {"mild": 40, "moderate": 80, "severe": 120},
+                                "description": "Пошкодження печінки або м’язів",
+                                "causes": [
+                                    "Інтенсивні тренування",
+                                    "Стероїди",
+                                    "Вірусні гепатити",
+                                    "Алкоголь"
+                                ],
+                                "immediate_actions": [
+                                    "Зменшення фізичних навантажень",
+                                    "Консультація лікаря при >2x норми"
+                                ],
+                                "supplements": [
+                                    "NAC 600-1200 мг/день",
+                                    "TUDCA 250-500 мг після їжі"
+                                ],
+                                "recheck_period": "30-40 днів"
+                            }
+                        }
+                    },
+                    "ggt": {
+                        "name": "ГГТ (гамма-глутамілтрансфераза)",
+                        "units": "Од/л",
+                        "reference_range": {"min": 0, "max": 50, "optimal": "<30"},
+                        "symptom_connections": ["fatigue", "abdominal_pain", "alcohol_abuse"],
+                        "interpretation": {
+                            "high": {
+                                "thresholds": {"mild": 50, "moderate": 100, "severe": 200},
+                                "description": "Пошкодження жовчних шляхів або печінки",
+                                "causes": [
+                                    "Алкогольне ураження",
+                                    "Медикаментозне ураження (стероїди, антибіотики)",
+                                    "Холецистит або холестаз",
+                                    "Жирова печінка"
+                                ],
+                                "immediate_actions": [
+                                    "Виключення алкоголю",
+                                    "Консультація гастроентеролога",
+                                    "УЗД печінки та жовчних шляхів"
+                                ],
+                                "supplements": [
+                                    "NAC 600-1200 мг/день",
+                                    "TUDCA 250-500 мг після їжі",
+                                    "Артишок 400-800 мг/день",
+                                    "Холін 500-1000 мг/день"
+                                ],
+                                "recheck_period": "30-40 днів"
+                            }
+                        }
+                    },
+                    "alp": {
+                        "name": "Лужна фосфатаза",
+                        "units": "Од/л",
+                        "reference_range": {"min": 30, "max": 120, "optimal": "<100"},
+                        "symptom_connections": ["fatigue", "bone_pain", "yellow_skin"],
+                        "interpretation": {
+                            "high": {
+                                "thresholds": {"mild": 120, "moderate": 200, "severe": 300},
+                                "description": "Пошкодження жовчних шляхів або кісток",
+                                "causes": [
+                                    "Холецистит або холестаз",
+                                    "Медикаментозне ураження",
+                                    "Проблеми з кістками (рахіт, остеопороз)",
+                                    "Гепатит"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація гастроентеролога",
+                                    "УЗД печінки та жовчних шляхів",
+                                    "Перевірка вітаміну D і кальцію"
+                                ],
+                                "supplements": [
+                                    "TUDCA 250-500 мг після їжі",
+                                    "Вітамін D3 2000-4000 МО/день",
+                                    "Холін 500-1000 мг/день"
+                                ],
+                                "recheck_period": "30-40 днів"
+                            }
+                        }
+                    },
+                    "bilirubin_total": {
+                        "name": "Білірубін загальний",
+                        "units": "мкмоль/л",
+                        "reference_range": {"min": 5, "max": 21, "optimal": "<17"},
+                        "symptom_connections": ["yellow_skin", "dark_urine", "fatigue"],
+                        "interpretation": {
+                            "high": {
+                                "thresholds": {"mild": 21, "moderate": 40, "severe": 60},
+                                "description": "Проблеми з печінкою або жовчними шляхами",
+                                "causes": [
+                                    "Гепатит",
+                                    "Холестаз",
+                                    "Медикаментозне ураження",
+                                    "Гемоліз"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація гастроентеролога",
+                                    "УЗД печінки",
+                                    "Виключення алкоголю та токсинів"
+                                ],
+                                "supplements": [
+                                    "TUDCA 250-500 мг після їжі",
+                                    "NAC 600-1200 мг/день",
+                                    "Артишок 400-800 мг/день"
+                                ],
+                                "recheck_period": "14-30 днів"
+                            }
+                        }
+                    }
+                }
             },
-            recommendations: [
-              'TUDCA + NAC як основа',
-              'Холосас 1 ч.л. 2-3 рази/день',
-              'Екстракт артишоку 300-600 мг',
-              'Куркумін BCM-95',
-              'Вітаміни групи B (особливо B6)',
-              'Магній для розслаблення жовчних проток',
-              'Інтервальне харчування 16:8 може допомогти'
-            ]
-          }
-        }
-      },
-
-      bilirubin_direct: {
-        name: 'Білірубін прямий',
-        units: 'мкмоль/л',
-        reference_range: { min: 0, max: 5 },
-        interpretation: {
-          high: {
-            description: 'Холестаз - печінка не може вивести білірубін',
-            urgent_evaluation: true
-          }
-        }
-      },
-
-      ggt: {
-        name: 'ГГТ (гамма-глутамілтрансфераза)',
-        units: 'Од/л',
-        reference_range: { male: '<55', female: '<38', optimal: '<30' },
-        interpretation: {
-          high: {
-            description: 'Найчутливіший маркер алкогольного ураження печінки',
-            recommendations: [
-              'Повна відмова від алкоголю мінімум на 3 міс',
-              'Гепатопротектори',
-              'Детокс програма'
-            ]
-          }
-        }
-      },
-
-      alkaline_phosphatase: {
-        name: 'Лужна фосфатаза',
-        units: 'Од/л',
-        reference_range: { min: 30, max: 120 },
-        interpretation: {
-          high: {
-            description: 'Застій жовчі, холестаз, можливі проблеми з жовчовиділенням'
-          }
-        }
-      }
-    },
-
-    clinical_scenarios: {
-      all_normal_with_symptoms: {
-        condition: 'ALT/AST нормальні, але є симптоми',
-        symptoms: ['bitter_mouth', 'right_side_heaviness'],
-        recommendation: 'М\'який жовчогінний протокол: артишок, холосас, магній, омега-3'
-      },
-      
-      elevated_transaminases: {
-        condition: 'ALT і AST підвищені',
-        interpretation: 'Можливе запалення печінки від токсичного впливу',
-        actions: [
-          'Відміна препаратів, що можуть пошкоджувати печінку',
-          'Курс гепатопротекторів',
-          'Контроль через 30-40 днів'
-        ]
-      }
-    }
-  },
-
-  // ===========================================
-  // ЩИТОВИДНА ЗАЛОЗА
-  // ===========================================
-  thyroid_panel: {
-    category: 'Щитовидна залоза',
-    description: 'Регуляція метаболізму, енергії, настрою',
-    
-    tests: {
-      tsh: {
-        name: 'ТТГ (тиреотропний гормон)',
-        units: 'мкМО/мл',
-        reference_range: { min: 0.4, max: 4.0, optimal: '0.8-2.5' },
-        symptom_connections: {
-          high: ['fatigue', 'weight_gain', 'cold_intolerance', 'depression', 'hair_loss'],
-          low: ['anxiety', 'weight_loss', 'heat_intolerance', 'palpitations']
-        },
-        
-        interpretation: {
-          high: {
-            thresholds: { mild: 4.5, moderate: 10, severe: 20 },
-            description: 'Гіпотиреоз - щитовидна залоза працює недостатньо',
-            causes: [
-              'Аутоімунний тиреоїдит (Хашимото)',
-              'Дефіцит йоду/селену',
-              'Хронічний стрес',
-              'Медикаментозне пригнічення'
-            ],
-            recommendations: [
-              'Селен 200 мкг/день',
-              'Йод 150-200 мкг/день (обережно при автоімунних процесах)',
-              'L-тирозин 500-1000 мг натще',
-              'Ашваганда для регуляції осі гіпоталамус-гіпофіз-щитовидка',
-              'Омега-3, поліпшення сну, зменшення стресу'
-            ],
-            additional_tests: ['T3', 'T4', 'АТ-ТПО', 'селен', 'феритин']
-          },
-          
-          low: {
-            description: 'Можливий гіпертиреоз або пригнічення від зовнішніх гормонів',
-            recommendations: [
-              'L-карнітин при гіперфункції',
-              'Контроль стресу та сну',
-              'Перевірка T3, T4, антитіл'
-            ]
-          }
-        }
-      },
-
-      t4_free: {
-        name: 'Т4 вільний',
-        units: 'пмоль/л',
-        reference_range: { min: 12, max: 22, optimal: '15-20' },
-        interpretation: {
-          high: {
-            description: 'Гіпертиреоз, тиреотоксикоз',
-            symptoms: ['тремор', 'схуднення', 'серцебиття']
-          },
-          low: {
-            description: 'Гіпотиреоз, нестача йоду/селену',
-            symptoms: ['млявість', 'набір ваги', 'холодність']
-          }
-        }
-      },
-
-      t3_free: {
-        name: 'Т3 вільний',
-        units: 'пмоль/л',
-        reference_range: { min: 3.1, max: 6.8, optimal: '4.5-6.0' },
-        interpretation: {
-          low_with_normal_t4: {
-            description: 'Погана конверсія T4→T3',
-            causes: ['стрес', 'дефіцит селену/цинку', 'проблеми печінки'],
-            recommendations: [
-              'Селен для 5-дейодинази',
-              'Цинк 25-30 мг',
-              'Адаптогени: родіола, ашваганда',
-              'Підтримка печінки: NAC, інозитол'
-            ]
-          }
-        }
-      },
-
-      reverse_t3: {
-        name: 'Зворотний Т3 (rT3)',
-        units: 'нг/дл',
-        reference_range: { min: 10, max: 24 },
-        interpretation: {
-          high: {
-            description: 'rT3 блокує дію T3 - "гіпотиреоз на фоні нормального T4"',
-            causes: ['хронічний стрес', 'інфекція', 'високий кортизол'],
-            recommendations: [
-              'Зниження стресу',
-              'Підвищення білка в раціоні',
-              'Родіола, ашваганда, NAC'
-            ]
-          }
-        }
-      },
-
-      anti_tpo: {
-        name: 'АТ-ТПО (антитіла до тиреоїдної пероксидази)',
-        units: 'Од/мл',
-        reference_range: { max: 35, optimal: '<10' },
-        interpretation: {
-          high: {
-            description: 'Аутоімунний тиреоїдит (Хашимото)',
-            recommendations: [
-              'Селен 200 мкг/день',
-              'Протизапальна дієта (low gluten, без лактози)',
-              'Омега-3 2-3 г/день',
-              'Куркумін, вітамін D',
-              'Пробіотики для кишечника',
-              'Контроль глютену та мікробіоти'
-            ]
-          }
-        }
-      }
-    },
-
-    symptom_analysis_logic: {
-      hypothyroid_pattern: {
-        symptoms: ['fatigue', 'weight_gain', 'cold_intolerance', 'depression'],
-        lab_pattern: 'TSH > 4.0',
-        conclusion: 'Ваша втома та чутливість до холоду можуть бути пов\'язані з підвищеним ТТГ, що вказує на гіпотиреоз'
-      },
-      
-      hyperthyroid_pattern: {
-        symptoms: ['weight_loss', 'anxiety', 'palpitations'],
-        lab_pattern: 'TSH < 0.4',
-        conclusion: 'Схуднення та серцебиття на фоні зниженого ТТГ може вказувати на гіпертиреоз'
-      }
-    }
-  },
-
-  // ===========================================
-  // ЗАГАЛЬНИЙ АНАЛІЗ КРОВІ (ЗАК)
-  // ===========================================
-  complete_blood_count: {
-    category: 'Загальний аналіз крові (ЗАК)',
-    
-    tests: {
-      hemoglobin: {
-        name: 'Гемоглобін',
-        units: 'г/л',
-        reference_range: { male: '135-170', female: '120-150' },
-        symptom_connections: {
-          low: ['fatigue', 'weakness', 'shortness_of_breath', 'pale_skin'],
-          high: ['headache', 'dizziness', 'fatigue']
-        },
-        interpretation: {
-          low: {
-            description: 'Анемія - недостатньо кисневої ємності крові',
-            causes: ['дефіцит заліза', 'дефіцит B12/фолату', 'крововтрата', 'хронічні захворювання'],
-            recommendations: [
-              'Феритин 25-50 мг/день з вітаміном C',
-              'B12 1000 мкг/день',
-              'Фолат (5-MTHF) 400-800 мкг',
-              'Перевірка джерел крововтрати'
-            ],
-            additional_tests: ['феритин', 'B12', 'фолат', 'ретикулоцити']
-          },
-          high: {
-            description: 'Можливе зневоднення, поліцитемія',
-            recommendations: ['Збільшити споживання води', 'Омега-3', 'Наттокіназа']
-          }
-        }
-      },
-
-      wbc: {
-        name: 'Лейкоцити',
-        units: '×10⁹/л',
-        reference_range: { min: 4.0, max: 9.0 },
-        interpretation: {
-          high: {
-            description: 'Інфекція, запалення, стрес',
-            recommendations: ['Цинк 25-50 мг', 'Вітамін C 1г', 'Адаптогени']
-          },
-          low: {
-            description: 'Імуносупресія, вірусна інфекція',
-            recommendations: ['NAC', 'Ашваганда', 'Вітамін D']
-          }
-        }
-      },
-
-      neutrophils: {
-        name: 'Нейтрофіли',
-        units: '%',
-        reference_range: { min: 40, max: 70 },
-        interpretation: {
-          high: {
-            description: 'Бактеріальна інфекція, запалення',
-            recommendations: ['Кверцетин', 'Цинк', 'Куркумін']
-          }
-        }
-      },
-
-      lymphocytes: {
-        name: 'Лімфоцити',
-        units: '%',
-        reference_range: { min: 20, max: 40 },
-        interpretation: {
-          high: {
-            description: 'Вірусні інфекції, аутоімунні процеси',
-            recommendations: ['Адаптогени', 'Вітамін D', 'Мелатонін']
-          }
-        }
-      },
-
-      platelets: {
-        name: 'Тромбоцити',
-        units: '×10⁹/л',
-        reference_range: { min: 150, max: 400 },
-        interpretation: {
-          high: {
-            description: 'Ризик тромбозу, запалення',
-            recommendations: ['Омега-3', 'Часник', 'Наттокіназа', 'Зелений чай']
-          },
-          low: {
-            description: 'Ризик кровотеч, аутоімунні процеси',
-            urgent_evaluation: true
-          }
-        }
-      }
-    }
-  },
-
-  // ===========================================
-  // ВУГЛЕВОДНИЙ ОБМІН
-  // ===========================================
-  glucose_metabolism: {
-    category: 'Вуглеводний обмін',
-    
-    tests: {
-      glucose_fasting: {
-        name: 'Глюкоза натще',
-        units: 'ммоль/л',
-        reference_range: { min: 3.9, max: 5.5, optimal: '4.5-5.0' },
-        symptom_connections: {
-          high: ['thirst', 'frequent_urination', 'fatigue', 'blurred_vision'],
-          low: ['shakiness', 'sweating', 'anxiety', 'hunger']
-        },
-        interpretation: {
-          high: {
-            thresholds: { prediabetes: 5.6, diabetes: 7.0 },
-            description: 'Порушення толерантності до глюкози або діабет',
-            recommendations: [
-              'Берберин 500 мг 2-3 рази/день',
-              'Альфа-ліпоєва кислота 300-600 мг',
-              'Хром піколінат 200 мкг',
-              'Інтервальне голодування 16:8',
-              'Прогулянки після їжі 10-15 хв'
-            ]
-          },
-          low: {
-            description: 'Можлива реактивна гіпоглікемія',
-            recommendations: [
-              'Дробне харчування з білком/жирами',
-              'L-тирозин зранку',
-              'Ашваганда для наднирників'
-            ]
-          }
-        }
-      },
-
-      insulin_fasting: {
-        name: 'Інсулін натще',
-        units: 'мкОд/мл',
-        reference_range: { min: 2.5, max: 10, optimal: '2.5-5.0' },
-        interpretation: {
-          high: {
-            description: 'Інсулінорезистентність',
-            recommendations: [
-              'Берберин 500 мг × 2 рази/день',
-              'Магній 200-400 мг увечері',
-              'Інозитол 1-3 г/день',
-              'Зменшення вуглеводів',
-              'Силові тренування'
-            ]
-          }
-        }
-      },
-
-      homa_ir: {
-        name: 'HOMA-IR індекс',
-        calculation: '(глюкоза × інсулін) / 22.5',
-        reference_range: { max: 2.5, optimal: '<1.5' },
-        interpretation: {
-          high: {
-            description: 'Інсулінорезистентність - клітини слабо реагують на інсулін',
-            health_impact: [
-              'Підвищує ризик набору ваги',
-              'Запалення в організмі',
-              'Прискорює старіння судин і мозку'
-            ]
-          }
-        }
-      },
-
-      hba1c: {
-        name: 'HbA1c (глікований гемоглобін)',
-        units: '%',
-        reference_range: { normal: '<5.7', prediabetes: '5.7-6.4', diabetes: '>6.5' },
-        description: 'Середній рівень глюкози за останні 2-3 місяці'
-      }
-    }
-  },
-
-  // ===========================================
-  // СТАТЕВА ПАНЕЛЬ (ЧОЛОВІКИ)
-  // ===========================================
-  male_hormones: {
-    category: 'Статева панель чоловіків',
-    
-    tests: {
-      testosterone_total: {
-        name: 'Тестостерон загальний',
-        units: 'нмоль/л',
-        reference_range: { 
-          '20-39': '12-35',
-          '40-59': '10-30', 
-          '60+': '8-25'
-        },
-        symptom_connections: {
-          low: ['fatigue', 'low_libido', 'erectile_dysfunction', 'muscle_loss', 'depression']
-        },
-        interpretation: {
-          very_low: {
-            threshold: '<12',
-            description: 'Критично низький - показання до ГЗТ',
-            impact: 'Втрата м\'язової маси, слабкість серця, погіршення якості життя',
-            action: 'Консультація андролога, розгляд гормонозамісної терапії'
-          },
-          low: {
-            threshold: '12-16',
-            description: 'Низький рівень - потребує корекції',
-            lifestyle_factors: [
-              'Тісна нижня білизна - порушує терморегуляцію',
-              'Сидячий спосіб життя - перегрів яєчок',
-              'Варикоцеле - порушення венозного відтоку',
-              'Неправильна постава - погіршення нейроендокринної передачі'
-            ],
-            recommendations: [
-              'Анатомічна білизна або вільні труси',
-              'Тверді накладки для сидіння, стояча робота',
-              'УЗД мошонки для виключення варикоцеле',
-              'Робота з поставою: таз, спина, шия в одній лінії'
-            ]
-          }
-        }
-      },
-
-      testosterone_free: {
-        name: 'Тестостерон вільний',
-        units: 'нмоль/л',
-        reference_range: { optimal: '>0.3' },
-        interpretation: {
-          low_with_normal_total: {
-            description: 'Проблема з ГЗСГ - тестостерон зв\'язаний',
-            causes: ['високий ГЗСГ', 'проблеми печінки', 'щитовидки'],
-            recommendations: [
-              'Бор 6-10 мг/день для зниження ГЗСГ',
-              'Перевірка щитовидки та печінки'
-            ]
-          }
-        }
-      },
-
-      lh: {
-        name: 'ЛГ (лютеїнізуючий гормон)',
-        units: 'мМО/мл',
-        reference_range: { min: 1.5, max: 9.3 },
-        diagnostic_patterns: {
-          primary_hypogonadism: {
-            pattern: 'Низький T + високий ЛГ/ФСГ',
-            description: 'Яєчка не відповідають на стимуляцію',
-            actions: ['УЗД мошонки', 'Консультація уролога']
-          },
-          secondary_hypogonadism: {
-            pattern: 'Низький T + низький ЛГ/ФСГ',
-            description: 'Проблема гіпофіза/гіпоталамуса',
-            actions: ['Стимуляція осі: ашваганда, цинк', 'Контроль стресу']
-          }
-        }
-      },
-
-      fsh: {
-        name: 'ФСГ (фолікулостимулюючий гормон)',
-        units: 'мМО/мл',
-        reference_range: { min: 1.0, max: 12 },
-        interpretation: {
-          high: {
-            description: 'Первинний гіпогонадизм, проблеми з яєчками',
-            additional_tests: ['УЗД мошонки', 'каріотип']
-          },
-          low: {
-            description: 'Вторинний гіпогонадизм, проблеми гіпофіза',
-            additional_tests: ['МРТ гіпофіза', 'пролактин']
-          }
-        }
-      },
-
-      prolactin: {
-        name: 'Пролактин',
-        units: 'нг/мл',
-        reference_range: { max: 15, optimal: '<12' },
-        interpretation: {
-          high: {
-            threshold: '>20',
-            description: 'Пригнічує лібідо та тестостерон',
-            causes: ['стрес', 'недосип', 'медикаменти', 'мікропролактинома'],
-            recommendations: [
-              'P-5-P (активний B6) 50-100 мг/день',
-              'Мака перуанська 1-3 г/день',
-              'L-тирозин 500-1000 мг натще',
-              'При рівні >30 - МРТ гіпофіза'
-            ]
-          }
-        }
-      },
-
-      estradiol: {
-        name: 'Естрадіол',
-        units: 'пг/мл',
-        reference_range: { optimal: '15-40' },
-        interpretation: {
-          high: {
-            description: 'Пригнічує тестостерон, може викликати гінекомастію',
-            causes: ['надлишок жиру', 'ароматизація', 'печінкові проблеми'],
-            recommendations: [
-              'Зниження жирової маси',
-              'DIM 200-300 мг/день',
-              'Кальцій D-глюкарат 500-1000 мг',
-              'Цинк для блокування ароматази'
-            ]
-          }
-        }
-      },
-
-      shbg: {
-        name: 'ГЗСГ (глобулін, що зв\'язує статеві гормони)',
-        units: 'нмоль/л',
-        reference_range: { min: 20, max: 60 },
-        interpretation: {
-          high: {
-            description: 'Менше вільного тестостерону',
-            recommendations: [
-              'Бор 6-10 мг/день',
-              'Магній 200-400 мг',
-              'Корекція інсулінорезистентності'
-            ]
-          },
-          low: {
-            description: 'Більше вільного тестостерону, але можливі проблеми печінки',
-            additional_tests: ['печінкові проби', 'щитовидка']
-          }
-        }
-      },
-
-      psa: {
-        name: 'ПСА (простат-специфічний антиген)',
-        units: 'нг/мл',
-        reference_range: { max: 1.5, age_40_plus: '<2.5' },
-        interpretation: {
-          high: {
-            description: 'Потенційно проблеми з простатою',
-            urgent_evaluation: true,
-            additional_tests: ['УЗД простати', 'урологічна консультація']
-          }
-        }
-      }
-    }
-  },
-
-  // ===========================================
-  // ЛІПІДОГРАМА
-  // ===========================================
-  lipid_panel: {
-    category: 'Ліпідограма',
-    description: 'Оцінка ризику серцево-судинних захворювань',
-    
-    tests: {
-      total_cholesterol: {
-        name: 'Загальний холестерин',
-        units: 'ммоль/л',
-        reference_range: { max: 5.0, optimal: '<4.5' },
-        interpretation: {
-          high: {
-            description: 'Підвищений ризик серцево-судинних захворювань',
-            recommendations: [
-              'Дієта з низьким вмістом насичених жирів',
-              'Збільшення фізичної активності',
-              'Розгляд статинів при високому ризику'
-            ]
-          }
-        }
-      },
-
-      ldl: {
-        name: 'ЛПНЩ (поганий холестерин)',
-        units: 'ммоль/л',
-        reference_range: { max: 3.0, optimal: '<2.5' },
-        interpretation: {
-          high: {
-            description: 'Підвищує ризик атеросклерозу, інфаркту, інсульту',
-            recommendations: [
-              'Берберин 500 мг 2 р/д',
-              'Омега-3 2000-3000 мг',
-              'Псиліум 1 ч.л./день',
-              'Часник екстракт 300-600 мг'
-            ]
-          }
-        }
-      },
-
-      hdl: {
-        name: 'ЛПВЩ (добрий холестерин)',
-        units: 'ммоль/л',
-        reference_range: { male: '>1.0', female: '>1.2', optimal: '>1.5' },
-        interpretation: {
-          low: {
-            description: 'Знижений захисний фактор для судин',
-            recommendations: ['Омега-3', 'Фізична активність', 'Ніацин (обережно)']
-          }
-        }
-      },
-
-      triglycerides: {
-        name: 'Тригліцериди',
-        units: 'ммоль/л',
-        reference_range: { max: 1.7, optimal: '<1.0' },
-        interpretation: {
-          high: {
-            description: 'Ознака інсулінорезистентності',
-            recommendations: ['Берберин', 'Омега-3', 'Зниження вуглеводів']
-          }
-        }
-      },
-
-      vldl: {
-        name: 'VLDL (ліпопротеїди дуже низької щільності)',
-        units: 'ммоль/л',
-        reference_range: { max: 0.77, optimal: '<0.5' },
-        interpretation: {
-          high: {
-            description: 'Сильний фактор ризику атеросклерозу та ССЗ',
-            recommendations: [
-              'УЗД сонних артерій для перевірки атеросклеротичних бляшок',
-              'Берберин, омега-3, статини при необхідності'
-            ]
-          }
-        }
-      },
-
-      apob: {
-        name: 'ApoB (аполіпопротеїн B)',
-        units: 'г/л',
-        reference_range: { max: 1.0, optimal: '<0.9' },
-        interpretation: {
-          high: {
-            description: 'Високий вміст атерогенних ліпопротеїдів',
-            recommendation: 'УЗД сонних артерій для перевірки атеросклеротичних бляшок'
-          }
-        }
-      },
-
-      atherogenic_coefficient: {
-        name: 'Коефіцієнт атерогенності',
-        calculation: '(Загальний холестерин - ЛПВЩ) / ЛПВЩ',
-        reference_range: { max: 3.0, optimal: '<2.5' },
-        interpretation: {
-          high: {
-            description: 'Високий ризик серцево-судинних захворювань',
-            urgent_evaluation: true
-          }
-        }
-      }
-    }
-  },
-
-  // ===========================================
-  // ВІТАМІНИ ТА МІНЕРАЛИ
-  // ===========================================
-  vitamins_minerals: {
-    category: 'Вітаміни та мінерали',
-    
-    tests: {
-      vitamin_d: {
-        name: 'Вітамін D (25-OH)',
-        units: 'нг/мл',
-        reference_range: { 
-          deficient: '<20',
-          insufficient: '20-30',
-          normal: '30-80',
-          optimal: '50-70'
-        },
-        symptom_connections: {
-          low: ['fatigue', 'depression', 'frequent_illness', 'bone_pain', 'muscle_weakness']
-        },
-        interpretation: {
-          deficient: {
-            description: 'Серйозний дефіцит',
-            health_impact: 'Знижений імунітет, депресія, слабкі кістки',
-            recommendations: [
-              'Вітамін D3 4000-10000 МО/день',
-              'Обов\'язково з вітаміном K2 100-200 мкг',
-              'Приймати з жирами',
-              'Контроль через 2-3 місяці'
-            ]
-          },
-          insufficient: {
-            description: 'Недостатній рівень',
-            recommendations: [
-              'Вітамін D3 2000-4000 МО/день',
-              'Вітамін K2 100 мкг',
-              'Перевірити магній'
-            ]
-          }
-        }
-      },
-
-      vitamin_b12: {
-        name: 'Вітамін B12',
-        units: 'пг/мл',
-        reference_range: { min: 300, max: 900, optimal: '500-700' },
-        symptom_connections: {
-          low: ['fatigue', 'memory_problems', 'tingling', 'mood_disorders']
-        },
-        interpretation: {
-          low: {
-            recommendations: [
-              'Метилкобаламін 1000 мкг/день сублінгвально',
-              'B-комплекс з активними формами',
-              'Перевірка фолатів та гомоцистеїну'
-            ]
-          }
-        }
-      },
-
-      folate: {
-        name: 'Фолат (B9)',
-        units: 'нг/мл',
-        reference_range: { min: 6, optimal: '>10' },
-        interpretation: {
-          low: {
-            description: 'Дефіцит фолієвої кислоти',
-            recommendations: [
-              '5-MTHF 400-800 мкг/день',
-              'Перевірити B12 і гомоцистеїн'
-            ]
-          }
-        }
-      },
-
-      homocysteine: {
-        name: 'Гомоцистеїн',
-        units: 'мкмоль/л',
-        reference_range: { min: 5, max: 10, optimal: '<8' },
-        interpretation: {
-          high: {
-            description: 'Підвищений ризик серцево-судинних захворювань',
-            recommendations: [
-              'B9 (5-MTHF), B6 (P-5-P), B12 (метил)',
-              'Триметилгліцин (бетаїн)',
-              'NAC для підтримки метилювання'
-            ]
-          }
-        }
-      },
-
-      ferritin: {
-        name: 'Феритин (запаси заліза)',
-        units: 'нг/мл',
-        reference_range: { 
-          female: '30-100',
-          male: '50-150',
-          optimal_female: '50-80',
-          optimal_male: '80-120'
-        },
-        symptom_connections: {
-          low: ['fatigue', 'hair_loss', 'restless_legs', 'cold_intolerance'],
-          high: ['joint_pain', 'fatigue', 'abdominal_pain']
-        },
-        interpretation: {
-          low: {
-            recommendations: [
-              'Залізо бігліцинат 25-50 мг з вітаміном C',
-              'Виключити джерела крововтрат',
-              'Перевірка щитовидки'
-            ]
-          },
-          high: {
-            description: 'Можливе запалення або перевантаження залізом',
-            actions: ['Виключити гемохроматоз', 'Протизапальна терапія']
-          }
-        }
-      },
-
-      magnesium: {
-        name: 'Магній (в еритроцитах)',
-        units: 'мг/дл',
-        reference_range: { min: 6.0, optimal: '6.5-7.0' },
-        interpretation: {
-          low: {
-            symptoms: ['судоми', 'тривога', 'безсоння', 'серцебиття'],
-            recommendations: [
-              'Магній гліцинат/цитрат 200-400 мг/день',
-              'Приймати ввечері для кращого сну'
-            ]
-          }
-        }
-      },
-
-      zinc: {
-        name: 'Цинк',
-        units: 'мкг/дл',
-        reference_range: { min: 70, max: 120, optimal: '90-110' },
-        interpretation: {
-          low: {
-            symptoms: ['слабкий імунітет', 'акне', 'повільне загоєння'],
-            recommendations: [
-              'Цинк піколінат 25-30 мг/день',
-              'Додати мідь 1-2 мг при тривалому прийомі'
-            ]
-          }
-        }
-      },
-
-      selenium: {
-        name: 'Селен',
-        units: 'мкг/л',
-        reference_range: { min: 90, max: 130, optimal: '110-120' },
-        interpretation: {
-          low: {
-            description: 'Дефіцит селену впливає на щитовидку та імунітет',
-            recommendations: [
-              'Селенометіонін 100-200 мкг/день',
-              'Важливо для конверсії T4→T3'
-            ]
-          }
-        }
-      },
-
-      copper: {
-        name: 'Мідь',
-        units: 'мкг/дл',
-        reference_range: { min: 80, max: 130, optimal: '90-120' },
-        interpretation: {
-          low: {
-            description: 'Дефіцит міді може викликати анемію',
-            recommendations: [
-              'Мідь гліцинат 1-2 мг/день',
-              'Баланс з цинком важливий'
-            ]
-          }
-        }
-      },
-
-      iodine: {
-        name: 'Йод (сеча)',
-        units: 'мкг/л',
-        reference_range: { min: 100, optimal: '>150' },
-        interpretation: {
-          low: {
-            description: 'Дефіцит йоду впливає на щитовидку',
-            recommendations: [
-              'Ламінарія або калію йодид 100-150 мкг/день',
-              'Обережно при автоімунних процесах щитовидки'
-            ]
-          }
-        }
-      }
-    }
-  },
-
-  // ===========================================
-  // ЛОГІКА ЗВ'ЯЗКУ СИМПТОМІВ З АНАЛІЗАМИ
-  // ===========================================
-  symptom_lab_correlations: {
-    fatigue: {
-      description: 'Хронічна втома',
-      possible_causes: [
-        { test: 'TSH', condition: '>4.0', explanation: 'Гіпотиреоз може бути причиною хронічної втоми' },
-        { test: 'hemoglobin', condition: '<120', explanation: 'Анемія знижує кисневу ємність крові' },
-        { test: 'vitamin_d', condition: '<30', explanation: 'Дефіцит вітаміну D часто викликає втому' },
-        { test: 'ferritin', condition: '<50', explanation: 'Низькі запаси заліза призводять до втоми' },
-        { test: 'testosterone_total', condition: '<15', explanation: 'Низький тестостерон викликає втому та апатію' },
-        { test: 'vitamin_b12', condition: '<400', explanation: 'Дефіцит B12 може викликати хронічну втому' }
-      ]
-    },
-
-    weight_gain: {
-      description: 'Набір ваги',
-      possible_causes: [
-        { test: 'TSH', condition: '>4.0', explanation: 'Гіпотиреоз сповільнює метаболізм' },
-        { test: 'HOMA_IR', condition: '>2.5', explanation: 'Інсулінорезистентність сприяє набору ваги' },
-        { test: 'insulin_fasting', condition: '>10', explanation: 'Високий інсулін сприяє накопиченню жиру' }
-      ]
-    },
-
-    weight_loss: {
-      description: 'Втрата ваги',
-      possible_causes: [
-        { test: 'TSH', condition: '<0.4', explanation: 'Гіпертиреоз прискорює метаболізм' },
-        { test: 't4_free', condition: '>22', explanation: 'Високий T4 викликає втрату ваги' }
-      ]
-    },
-
-    low_libido: {
-      description: 'Знижене лібідо',
-      possible_causes: [
-        { test: 'testosterone_total', condition: '<15', explanation: 'Основна причина зниженого лібідо у чоловіків' },
-        { test: 'prolactin', condition: '>20', explanation: 'Високий пролактин пригнічує лібідо' },
-        { test: 'estradiol', condition: '>40', explanation: 'Естрогенове домінування знижує лібідо' }
-      ]
-    },
-
-    depression: {
-      description: 'Депресивний настрій',
-      possible_causes: [
-        { test: 'TSH', condition: '>4.0', explanation: 'Гіпотиреоз часто викликає депресію' },
-        { test: 'vitamin_d', condition: '<30', explanation: 'Дефіцит вітаміну D пов\'язаний з депресією' },
-        { test: 'testosterone_total', condition: '<15', explanation: 'Низький тестостерон може викликати депресію' },
-        { test: 'vitamin_b12', condition: '<400', explanation: 'Дефіцит B12 впливає на настрій' }
-      ]
-    },
-
-    anxiety: {
-      description: 'Тривожність',
-      possible_causes: [
-        { test: 'TSH', condition: '<0.4', explanation: 'Гіпертиреоз може викликати тривожність' },
-        { test: 'magnesium', condition: '<6.0', explanation: 'Дефіцит магнію часто викликає тривогу' },
-        { test: 'glucose_fasting', condition: '<4.0', explanation: 'Гіпоглікемія може викликати тривожність' }
-      ]
-    },
-
-    hair_loss: {
-      description: 'Випадіння волосся',
-      possible_causes: [
-        { test: 'TSH', condition: '>4.0', explanation: 'Гіпотиреоз часто викликає випадіння волосся' },
-        { test: 'ferritin', condition: '<50', explanation: 'Дефіцит заліза - частя причина випадіння волосся' },
-        { test: 'testosterone_total', condition: '<15', explanation: 'Низький тестостерон може викликати випадіння волосся' },
-        { test: 'zinc', condition: '<70', explanation: 'Дефіцит цинку впливає на ріст волосся' }
-      ]
-    },
-
-    cold_intolerance: {
-      description: 'Чутливість до холоду',
-      possible_causes: [
-        { test: 'TSH', condition: '>4.0', explanation: 'Гіпотиреоз викликає чутливість до холоду' },
-        { test: 'ferritin', condition: '<50', explanation: 'Дефіцит заліза може викликати холодність' }
-      ]
-    },
-
-    palpitations: {
-      description: 'Серцебиття',
-      possible_causes: [
-        { test: 'TSH', condition: '<0.4', explanation: 'Гіпертиреоз часто викликає серцебиття' },
-        { test: 'magnesium', condition: '<6.0', explanation: 'Дефіцит магнію може викликати аритмії' }
-      ]
-    },
-
-    frequent_illness: {
-      description: 'Часті захворювання',
-      possible_causes: [
-        { test: 'vitamin_d', condition: '<30', explanation: 'Дефіцит вітаміну D знижує імунітет' },
-        { test: 'zinc', condition: '<70', explanation: 'Дефіцит цинку впливає на імунну систему' }
-      ]
-    }
-  },
-
-  // ===========================================
-  // СИСТЕМА ГЕНЕРАЦІЇ ЗВІТІВ
-  // ===========================================
-  report_generator: {
-    
-    // Функція для аналізу симптомів і лабораторних показників
-    analyzeSymptoms: function(symptoms, lab_results) {
-      const findings = [];
-      const recommendations = new Set();
-      
-      // Перебираємо симптоми та шукаємо відповідні лабораторні кореляції
-      symptoms.forEach(symptom => {
-        if (this.parent.symptom_lab_correlations[symptom]) {
-          this.parent.symptom_lab_correlations[symptom].possible_causes.forEach(cause => {
-            const lab_value = lab_results[cause.test];
-            if (lab_value !== undefined && this.checkCondition(lab_value, cause.condition)) {
-              findings.push({
-                symptom: symptom,
-                symptom_description: this.parent.symptom_lab_correlations[symptom].description,
-                test: cause.test,
-                value: lab_value,
-                explanation: cause.explanation,
-                priority: this.getPriority(cause.test, lab_value)
-              });
+            # ===========================================
+            # ГОРМОНАЛЬНІ ПОКАЗНИКИ
+            # ===========================================
+            "hormone_panel": {
+                "category": "Гормональні показники",
+                "description": "Оцінка гормонального балансу",
+                "tests": {
+                    "tsh": {
+                        "name": "TSH (тиреотропний гормон)",
+                        "units": "мМО/л",
+                        "reference_range": {"min": 0.4, "max": 4.0, "optimal": "1-2"},
+                        "symptom_connections": ["fatigue", "weight_gain", "cold_intolerance"],
+                        "interpretation": {
+                            "high": {
+                                "thresholds": {"mild": 4.0, "moderate": 6.0, "severe": 10.0},
+                                "description": "Гіпотиреоз",
+                                "causes": [
+                                    "Дефіцит йоду",
+                                    "Аутоімунне ураження (Хашимото)",
+                                    "Медикаментозне ураження"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація ендокринолога",
+                                    "Перевірка Т3, Т4, АТ-ТПО"
+                                ],
+                                "supplements": [
+                                    "Селен 200 мкг/день",
+                                    "Йод 150 мкг/день (обережно при АТ-ТПО+)",
+                                    "L-тирозин 500-1000 мг натще"
+                                ],
+                                "recheck_period": "60-90 днів"
+                            }
+                        }
+                    },
+                    "testosterone_total": {
+                        "name": "Тестостерон загальний",
+                        "units": "нмоль/л",
+                        "reference_range": {"min": 12, "max": 30, "optimal": "15-25"},
+                        "symptom_connections": ["low_libido", "fatigue", "erectile_dysfunction"],
+                        "interpretation": {
+                            "low": {
+                                "thresholds": {"mild": 12, "moderate": 8, "severe": 5},
+                                "description": "Гіпогонадизм або порушення синтезу",
+                                "causes": [
+                                    "Стрес",
+                                    "Недостатній сон",
+                                    "Дефіцит цинку/вітаміну D",
+                                    "Порушення осі ГГЯ"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація андролога",
+                                    "Перевірка ЛГ, ФСГ, пролактину"
+                                ],
+                                "supplements": [
+                                    "Цинк 30-50 мг/день",
+                                    "Вітамін D3 2000-4000 МО/день",
+                                    "Ашваганда 600 мг/день"
+                                ],
+                                "recheck_period": "60-90 днів"
+                            }
+                        }
+                    },
+                    "cortisol": {
+                        "name": "Кортизол",
+                        "units": "нмоль/л",
+                        "reference_range": {"min": 138, "max": 690, "optimal": "200-500"},
+                        "symptom_connections": ["fatigue", "insomnia", "weight_gain"],
+                        "interpretation": {
+                            "high": {
+                                "thresholds": {"mild": 690, "moderate": 800, "severe": 1000},
+                                "description": "Хронічний стрес",
+                                "causes": [
+                                    "Перетренування",
+                                    "Поганий сон",
+                                    "Стрес",
+                                    "Кофеїн/стимулятори"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація ендокринолога",
+                                    "Зменшення тренувань"
+                                ],
+                                "supplements": [
+                                    "Ашваганда 600 мг/день",
+                                    "Родіола 200-400 мг/день",
+                                    "Фосфатидилсерин 100-200 мг перед сном"
+                                ],
+                                "recheck_period": "30-60 днів"
+                            }
+                        }
+                    },
+                    "prolactin": {
+                        "name": "Пролактин",
+                        "units": "мкг/л",
+                        "reference_range": {"min": 2, "max": 25, "optimal": "<15"},
+                        "symptom_connections": ["low_libido", "fatigue", "gynecomastia"],
+                        "interpretation": {
+                            "high": {
+                                "thresholds": {"mild": 25, "moderate": 50, "severe": 100},
+                                "description": "Гіперпролактинемія",
+                                "causes": [
+                                    "Стрес",
+                                    "Гіпотиреоз",
+                                    "Медикаменти (антидепресанти, антипсихотики)",
+                                    "Пухлина гіпофіза"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація ендокринолога",
+                                    "МРТ гіпофіза",
+                                    "Перевірка TSH"
+                                ],
+                                "supplements": [
+                                    "Вітамін B6 100-200 мг/день",
+                                    "L-допа 500-1000 мг/день",
+                                    "Ашваганда 600 мг/день"
+                                ],
+                                "recheck_period": "30-60 днів"
+                            }
+                        }
+                    },
+                    "lh": {
+                        "name": "ЛГ (лютеїнізуючий гормон)",
+                        "units": "МО/л",
+                        "reference_range": {"min": 1.5, "max": 9.3, "optimal": "3-6"},
+                        "symptom_connections": ["low_libido", "fatigue", "erectile_dysfunction"],
+                        "interpretation": {
+                            "low": {
+                                "thresholds": {"mild": 1.5, "moderate": 1.0, "severe": 0.5},
+                                "description": "Вторинний гіпогонадизм",
+                                "causes": [
+                                    "Стрес",
+                                    "Ожиріння",
+                                    "Гіпофізарна недостатність",
+                                    "Стероїди"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація андролога",
+                                    "Перевірка тестостерону, ФСГ"
+                                ],
+                                "supplements": [
+                                    "Цинк 30-50 мг/день",
+                                    "Вітамін D3 2000-4000 МО/день"
+                                ],
+                                "recheck_period": "60-90 днів"
+                            }
+                        }
+                    },
+                    "fsh": {
+                        "name": "ФСГ (фолікулостимулюючий гормон)",
+                        "units": "МО/л",
+                        "reference_range": {"min": 1.4, "max": 18.1, "optimal": "3-10"},
+                        "symptom_connections": ["low_libido", "infertility", "fatigue"],
+                        "interpretation": {
+                            "low": {
+                                "thresholds": {"mild": 1.4, "moderate": 1.0, "severe": 0.5},
+                                "description": "Порушення репродуктивної функції",
+                                "causes": [
+                                    "Стероїди",
+                                    "Гіпофізарна недостатність",
+                                    "Стрес"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація андролога",
+                                    "Перевірка тестостерону, ЛГ"
+                                ],
+                                "supplements": [
+                                    "Цинк 30-50 мг/день",
+                                    "Вітамін D3 2000-4000 МО/день"
+                                ],
+                                "recheck_period": "60-90 днів"
+                            }
+                        }
+                    }
+                }
+            },
+            # ===========================================
+            # МЕТАБОЛІЧНІ ПОКАЗНИКИ
+            # ===========================================
+            "metabolic_panel": {
+                "category": "Метаболічні показники",
+                "description": "Оцінка метаболізму, глюкози, ліпідів",
+                "tests": {
+                    "glucose": {
+                        "name": "Глюкоза натще",
+                        "units": "ммоль/л",
+                        "reference_range": {"min": 3.3, "max": 5.5, "optimal": "<5.0"},
+                        "symptom_connections": ["thirst", "fatigue", "weight_loss"],
+                        "interpretation": {
+                            "high": {
+                                "thresholds": {"mild": 5.5, "moderate": 7.0, "severe": 11.0},
+                                "description": "Інсулінорезистентність або діабет",
+                                "causes": [
+                                    "Високовуглеводна дієта",
+                                    "Переїдання",
+                                    "Мало руху",
+                                    "Генетика"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація ендокринолога",
+                                    "HbA1c, інсулін"
+                                ],
+                                "supplements": [
+                                    "Берберин 500-1000 мг перед їжею",
+                                    "Хром піколінат 200-400 мкг",
+                                    "Кориця 1-2 г з їжею"
+                                ],
+                                "recheck_period": "30-60 днів"
+                            }
+                        }
+                    },
+                    "insulin": {
+                        "name": "Інсулін натще",
+                        "units": "мкОд/мл",
+                        "reference_range": {"min": 2, "max": 19, "optimal": "<10"},
+                        "symptom_connections": ["hunger", "fatigue", "weight_gain"],
+                        "interpretation": {
+                            "high": {
+                                "thresholds": {"mild": 19, "moderate": 25, "severe": 30},
+                                "description": "Інсулінорезистентність",
+                                "causes": [
+                                    "Високовуглеводна дієта",
+                                    "Переїдання",
+                                    "Мало руху",
+                                    "Генетика"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація ендокринолога",
+                                    "Глюкоза, HbA1c"
+                                ],
+                                "supplements": [
+                                    "Берберин 500-1000 мг перед їжею",
+                                    "Хром піколінат 200-400 мкг",
+                                    "Кориця 1-2 г з їжею"
+                                ],
+                                "recheck_period": "30-60 днів"
+                            }
+                        }
+                    },
+                    "hba1c": {
+                        "name": "Глікований гемоглобін (HbA1c)",
+                        "units": "%",
+                        "reference_range": {"min": 4.0, "max": 5.6, "optimal": "<5.4"},
+                        "symptom_connections": ["thirst", "fatigue", "weight_loss"],
+                        "interpretation": {
+                            "high": {
+                                "thresholds": {"mild": 5.6, "moderate": 6.5, "severe": 7.0},
+                                "description": "Предіабет або діабет",
+                                "causes": [
+                                    "Інсулінорезистентність",
+                                    "Високовуглеводна дієта",
+                                    "Генетика"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація ендокринолога",
+                                    "Перевірка глюкози, інсуліну"
+                                ],
+                                "supplements": [
+                                    "Берберин 500-1000 мг перед їжею",
+                                    "Хром піколінат 200-400 мкг",
+                                    "Альфа-ліпоєва кислота 300-600 мг/день"
+                                ],
+                                "recheck_period": "90-120 днів"
+                            }
+                        }
+                    },
+                    "cholesterol_total": {
+                        "name": "Холестерин загальний",
+                        "units": "ммоль/л",
+                        "reference_range": {"min": 3.0, "max": 5.2, "optimal": "<4.5"},
+                        "symptom_connections": ["fatigue", "chest_pain", "shortness_of_breath"],
+                        "interpretation": {
+                            "high": {
+                                "thresholds": {"mild": 5.2, "moderate": 6.2, "severe": 7.0},
+                                "description": "Ризик атеросклерозу",
+                                "causes": [
+                                    "Вევ
+                                "Високожирова дієта",
+                                    "Мало руху",
+                                    "Генетика",
+                                    "Стероїди"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація кардіолога",
+                                    "Перегляд дієти"
+                                ],
+                                "supplements": [
+                                    "Омега-3 1000-2000 мг/день",
+                                    "Коензим Q10 100-200 мг/день",
+                                    "Часник 600-1200 мг/день"
+                                ],
+                                "recheck_period": "90-120 днів"
+                            }
+                        }
+                    },
+                    "ldl": {
+                        "name": "ЛПНЩ (LDL)",
+                        "units": "ммоль/л",
+                        "reference_range": {"min": 1.0, "max": 3.0, "optimal": "<2.5"},
+                        "symptom_connections": ["chest_pain", "shortness_of_breath"],
+                        "interpretation": {
+                            "high": {
+                                "thresholds": {"mild": 3.0, "moderate": 4.0, "severe": 5.0},
+                                "description": "Високий ризик серцево-судинних захворювань",
+                                "causes": [
+                                    "Високожирова дієта",
+                                    "Мало руху",
+                                    "Генетика"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація кардіолога",
+                                    "Зміна дієти"
+                                ],
+                                "supplements": [
+                                    "Омега-3 1000-2000 мг/день",
+                                    "Коензим Q10 100-200 мг/день"
+                                ],
+                                "recheck_period": "90-120 днів"
+                            }
+                        }
+                    },
+                    "hdl": {
+                        "name": "ЛПВЩ (HDL)",
+                        "units": "ммоль/л",
+                        "reference_range": {"min": 1.0, "max": 2.0, "optimal": ">1.5"},
+                        "symptom_connections": ["fatigue", "chest_pain"],
+                        "interpretation": {
+                            "low": {
+                                "thresholds": {"mild": 1.0, "moderate": 0.8, "severe": 0.6},
+                                "description": "Низький рівень захисту від атеросклерозу",
+                                "causes": [
+                                    "Мало руху",
+                                    "Високовуглеводна дієта",
+                                    "Куріння"
+                                ],
+                                "immediate_actions": [
+                                    "Регулярні кардіотренування",
+                                    "Консультація кардіолога"
+                                ],
+                                "supplements": [
+                                    "Омега-3 1000-2000 мг/день",
+                                    "Ніацин 500-1000 мг/день"
+                                ],
+                                "recheck_period": "90-120 днів"
+                            }
+                        }
+                    }
+                }
+            },
+            # ===========================================
+            # ВІТАМІНИ ТА МІКРОЕЛЕМЕНТИ
+            # ===========================================
+            "vitamin_mineral_panel": {
+                "category": "Вітаміни та мікроелементи",
+                "description": "Оцінка рівня вітамінів і мікроелементів",
+                "tests": {
+                    "vitamin_d": {
+                        "name": "Вітамін D (25-OH)",
+                        "units": "нг/мл",
+                        "reference_range": {"min": 30, "max": 100, "optimal": "40-60"},
+                        "symptom_connections": ["fatigue", "bone_pain", "depression"],
+                        "interpretation": {
+                            "low": {
+                                "thresholds": {"mild": 30, "moderate": 20, "severe": 10},
+                                "description": "Дефіцит вітаміну D",
+                                "causes": [
+                                    "Недостатнє перебування на сонці",
+                                    "Низьке споживання вітаміну D",
+                                    "Порушення всмоктування"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація лікаря",
+                                    "Додатковий прийом вітаміну D"
+                                ],
+                                "supplements": [
+                                    "Вітамін D3 2000-5000 МО/день",
+                                    "Магній 200-400 мг/день",
+                                    "Вітамін K2 100-200 мкг/день"
+                                ],
+                                "recheck_period": "90-120 днів"
+                            }
+                        }
+                    },
+                    "ferritin": {
+                        "name": "Феритин",
+                        "units": "нг/мл",
+                        "reference_range": {"min": 30, "max": 400, "optimal": "50-150"},
+                        "symptom_connections": ["fatigue", "hair_loss", "pale_skin"],
+                        "interpretation": {
+                            "low": {
+                                "thresholds": {"mild": 30, "moderate": 20, "severe": 10},
+                                "description": "Дефіцит заліза",
+                                "causes": [
+                                    "Недостатнє споживання заліза",
+                                    "Крововтрати",
+                                    "Порушення всмоктування"
+                                ],
+                                "immediate_actions": [
+                                    "Консультація гематолога",
+                                    "Перевірка заліза, ТЗЗС"
+                                ],
+                                "supplements": [
+                                    "Залізо 18-65 мг/день (з вітаміном С)",
+                                    "Вітамін С 500-1000 мг/день"
+                                ],
+                                "recheck_period": "60-90 днів"
+                            }
+                        }
+                    }
+                }
+            },
+            # ===========================================
+            # СИНДРОМИ
+            # ===========================================
+            "syndromes": {
+                "hypothyroid_syndrome": {
+                    "criteria": {
+                        "tsh_high": "TSH > 4.0",
+                        "symptoms": ["fatigue", "weight_gain", "cold_intolerance"]
+                    },
+                    "interpretation": "Гіпотиреоїдний синдром",
+                    "recommendations": [
+                        "Консультація ендокринолога",
+                        "Селен 200 мкг/день",
+                        "Йод 150 мкг/день (обережно при АТ-ТПО+)",
+                        "L-тирозин 500-1000 мг натще"
+                    ]
+                },
+                "male_hypogonadism": {
+                    "criteria": {
+                        "testosterone_low": "testosterone_total < 12",
+                        "symptoms": ["low_libido", "fatigue", "erectile_dysfunction"]
+                    },
+                    "interpretation": "Чоловічий гіпогонадизм",
+                    "recommendations": [
+                        "Консультація андролога",
+                        "УЗД мошонки",
+                        "Перевірка ЛГ, ФСГ, пролактину",
+                        "Розгляд ГЗТ або стимулюючої терапії"
+                    ]
+                },
+                "insulin_resistance": {
+                    "criteria": {
+                        "insulin_high": "insulin > 19",
+                        "glucose_high": "glucose > 5.5",
+                        "symptoms": ["hunger", "fatigue", "weight_gain"]
+                    },
+                    "interpretation": "Інсулінорезистентність",
+                    "recommendations": [
+                        "Консультація ендокринолога",
+                        "Низьковуглеводна дієта",
+                        "Регулярні фізичні навантаження",
+                        "Берберин 500-1000 мг перед їжею",
+                        "Хром піколінат 200-400 мкг"
+                    ]
+                },
+                "vitamin_d_deficiency": {
+                    "criteria": {
+                        "vitamin_d_low": "vitamin_d < 30",
+                        "symptoms": ["fatigue", "bone_pain", "depression"]
+                    },
+                    "interpretation": "Дефіцит вітаміну D",
+                    "recommendations": [
+                        "Консультація лікаря",
+                        "Вітамін D3 2000-5000 МО/день",
+                        "Магній 200-400 мг/день",
+                        "Вітамін K2 100-200 мкг/день"
+                    ]
+                }
             }
-          });
         }
-      });
-      
-      // Додаємо рекомендації на основі знайдених зв'язків
-      findings.forEach(finding => {
-        const testRecommendations = this.getTestRecommendations(finding.test, finding.value);
-        testRecommendations.forEach(rec => recommendations.add(rec));
-      });
-      
-      return { 
-        findings: findings.sort((a, b) => b.priority - a.priority), 
-        recommendations: Array.from(recommendations) 
-      };
-    },
 
-    // Перевірка умови для лабораторного показника
-    checkCondition: function(value, condition) {
-      if (typeof value !== 'number') return false;
-      
-      if (condition.startsWith('>')) {
-        return value > parseFloat(condition.substring(1));
-      } else if (condition.startsWith('<')) {
-        return value < parseFloat(condition.substring(1));
-      } else if (condition.includes('-')) {
-        const [min, max] = condition.split('-').map(Number);
-        return value >= min && value <= max;
-      }
-      return false;
-    },
+    def interpret_analysis(self, user_id: str, analysis: Dict, symptoms: List[str] = None) -> Dict:
+        """Інтерпретує аналіз крові з урахуванням симптомів."""
+        self.security_agent.check_user(user_id)
+        self.subscription_manager.check_analysis_limit(user_id)
 
-    // Визначення пріоритетності знахідки
-    getPriority: function(test, value) {
-      const criticalTests = {
-        'TSH': { high: 10, moderate: 5 },
-        'testosterone_total': { high: 8, moderate: 4 },
-        'vitamin_d': { high: 7, moderate: 3 },
-        'ferritin': { high: 6, moderate: 3 }
-      };
-      
-      if (criticalTests[test]) {
-        // Визначаємо ступінь відхилення
-        return criticalTests[test].high; // Спрощено, можна доробити логіку
-      }
-      
-      return 1;
-    },
+        analysis_type = analysis.get("type")
+        value = analysis.get("value")
+        date = analysis.get("date")
 
-    // Отримання рекомендацій для конкретного тесту
-    getTestRecommendations: function(test, value) {
-      const recommendations = [];
-      
-      // Знаходимо відповідний тест в базі даних
-      const testData = this.findTestInDatabase(test);
-      if (testData && testData.interpretation) {
-        if (testData.interpretation.high && value > testData.reference_range.max) {
-          if (testData.interpretation.high.recommendations) {
-            recommendations.push(...testData.interpretation.high.recommendations);
-          }
-          if (testData.interpretation.high.supplements) {
-            recommendations.push(...testData.interpretation.high.supplements);
-          }
+        if not all([analysis_type, value, date]):
+            raise HTTPException(status_code=400, detail="Потрібні type, value, date")
+
+        # Збереження аналізу
+        self.former_user.add_analysis(user_id, analysis_type, value, date)
+
+        # Пошук відповідного тесту в базі
+        interpretation = {}
+        for panel, data in self.COMPREHENSIVE_LAB_INTERPRETER.items():
+            if panel == "syndromes":
+                continue
+            tests = data.get("tests", {})
+            if analysis_type.lower() in tests:
+                test_info = tests[analysis_type.lower()]
+                ref_range = test_info["reference_range"]
+                
+                # Визначення статусу
+                status = "normal"
+                if value < ref_range["min"]:
+                    status = "low"
+                    interpretation = test_info["interpretation"].get("low", {})
+                elif value > ref_range["max"]:
+                    status = "high"
+                    interpretation = test_info["interpretation"].get("high", {})
+                
+                interpretation.update({
+                    "test_name": test_info["name"],
+                    "category": data["category"],
+                    "status": status,
+                    "reference_range": ref_range,
+                    "symptom_connections": test_info["symptom_connections"]
+                })
+
+        # Перевірка синдромів
+        syndromes = []
+        user_data = self.former_user.get_user_data(user_id)
+        user_symptoms = symptoms or user_data.get("symptoms", [])
+        for syndrome, info in self.COMPREHENSIVE_LAB_INTERPRETER["syndromes"].items():
+            criteria_met = True
+            for key, condition in info["criteria"].items():
+                if key.endswith("_high") and analysis_type.lower() == key.replace("_high", "") and value <= float(condition.split(">")[1]):
+                    criteria_met = False
+                elif key.endswith("_low") and analysis_type.lower() == key.replace("_low", "") and value >= float(condition.split("<")[1]):
+                    criteria_met = False
+                elif key == "symptoms" and not all(s in user_symptoms for s in condition):
+                    criteria_met = False
+            if criteria_met:
+                syndromes.append({
+                    "syndrome": info["interpretation"],
+                    "recommendations": info["recommendations"]
+                })
+
+        # AI-інтерпретація (як резервна)
+        if not interpretation:
+            prompt = f"Інтерпретуй аналіз: {analysis_type} = {value} (дата: {date}). Симптоми: {user_symptoms}. Дай рекомендації."
+            response = openai.Completion.create(
+                engine="text-davinci-003",
+                prompt=prompt,
+                max_tokens=500
+            ).choices[0].text.strip()
+            interpretation = {"ai_interpretation": response}
+
+        # Збереження рекомендацій
+        self.former_user.update_user_data(user_id, {
+            "analysis_interpretations": user_data.get("analysis_interpretations", []) + [{
+                "analysis": {"type": analysis_type, "value": value, "date": date},
+                "interpretation": interpretation,
+                "syndromes": syndromes
+            }]
+        })
+
+        self.logger_agent.log_request(user_id, "interpret_analysis", self.logger_agent.token_usage_per_request)
+        return {
+            "analysis": {"type": analysis_type, "value": value, "date": date},
+            "interpretation": interpretation,
+            "syndromes": syndromes
         }
-        if (testData.interpretation.low && value < testData.reference_range.min) {
-          if (testData.interpretation.low.recommendations) {
-            recommendations.push(...testData.interpretation.low.recommendations);
-          }
-        }
-      }
-      
-      return recommendations;
-    },
-
-    // Пошук тесту в базі даних
-    findTestInDatabase: function(testName) {
-      const categories = [
-        'liver_panel', 'thyroid_panel', 'complete_blood_count', 
-        'glucose_metabolism', 'male_hormones', 'lipid_panel', 'vitamins_minerals'
-      ];
-      
-      for (const category of categories) {
-        const categoryData = this.parent[category];
-        if (categoryData && categoryData.tests) {
-          for (const [key, testData] of Object.entries(categoryData.tests)) {
-            if (key === testName || testData.name.toLowerCase().includes(testName.toLowerCase())) {
-              return testData;
-            }
-          }
-        }
-      }
-      return null;
-    },
-
-    // Генерація персоналізованого GPT-style звіту
-    generatePersonalizedReport: function(user_data) {
-      const { symptoms, lab_results, user_info } = user_data;
-      const analysis = this.analyzeSymptoms(symptoms, lab_results);
-      
-      let report = '';
-      
-      // Вступ
-      report += `📋 ПЕРСОНАЛІЗОВАНИЙ АНАЛІЗ РЕЗУЛЬТАТІВ\n\n`;
-      
-      if (user_info) {
-        report += `Вік: ${user_info.age || 'не вказано'}, Стать: ${user_info.gender || 'не вказано'}\n`;
-        report += `Основні скарги: ${symptoms.join(', ')}\n\n`;
-      }
-      
-      // Основні знахідки
-      if (analysis.findings.length > 0) {
-        report += `🔍 ЗНАЙДЕНІ ЗВ'ЯЗКИ МІЖ СИМПТОМАМИ ТА АНАЛІЗАМИ:\n\n`;
-        
-        analysis.findings.forEach((finding, index) => {
-          report += `${index + 1}. ✅ Ви скаржитесь на "${finding.symptom_description}", а ваш показник "${finding.test}" становить ${finding.value}.\n`;
-          report += `   ${finding.explanation}\n\n`;
-        });
-      } else {
-        report += `ℹ️ Прямих зв'язків між вашими симптомами та відхиленнями в аналізах не виявлено.\n`;
-        report += `Це може означати, що причини симптомів потребують додаткового обстеження.\n\n`;
-      }
-      
-      // Рекомендації
-      if (analysis.recommendations.length > 0) {
-        report += `💊 РЕКОМЕНДАЦІЇ:\n\n`;
-        analysis.recommendations.forEach((rec, index) => {
-          report += `${index + 1}. ${rec}\n`;
-        });
-        report += `\n`;
-      }
-      
-      // Додаткові рекомендації
-      report += `⚠️ ВАЖЛИВО:\n`;
-      report += `• Всі рекомендації носять інформаційний характер\n`;
-      report += `• Обов'язково проконсультуйтесь з лікарем перед початком прийому БАДів\n`;
-      report += `• При серйозних відхиленнях в аналізах зверніться до спеціаліста\n`;
-      report += `• Контрольні аналізи рекомендується здавати через 1-3 місяці\n\n`;
-      
-      return report;
-    },
-
-    // Ініціалізація з посиланням на батьківський об'єкт
-    init: function(parent) {
-      this.parent = parent;
-      return this;
-    }
-  },
-
-  // ===========================================
-  // КЛІНІЧНІ СЦЕНАРІЇ
-  // ===========================================
-  clinical_scenarios: {
-    metabolic_syndrome: {
-      criteria: {
-        glucose_high: 'glucose_fasting > 5.6',
-        insulin_high: 'insulin_fasting > 10',
-        triglycerides_high: 'triglycerides > 1.7',
-        hdl_low: 'hdl < 1.0'
-      },
-      interpretation: 'Метаболічний синдром - комплекс порушень обміну речовин',
-      recommendations: [
-        'Інтервальне голодування 16:8',
-        'Берберин 500 мг 2 рази/день',
-        'Омега-3 2-3 г/день',
-        'Регулярні фізичні навантаження',
-        'Зниження ваги на 5-10%'
-      ]
-    },
-
-    hypothyroid_syndrome: {
-      criteria: {
-        tsh_high: 'TSH > 4.0',
-        symptoms: ['fatigue', 'weight_gain', 'cold_intolerance']
-      },
-      interpretation: 'Гіпотиреоідний синдром',
-      recommendations: [
-        'Консультація ендокринолога',
-        'Селен 200 мкг/день',
-        'Йод 150 мкг/день (обережно при АТ-ТПО+)',
-        'L-тирозин 500-1000 мг натще'
-      ]
-    },
-
-    male_hypogonadism: {
-      criteria: {
-        testosterone_low: 'testosterone_total < 12',
-        symptoms: ['low_libido', 'fatigue', 'erectile_dysfunction']
-      },
-      interpretation: 'Чоловічий гіпогонадизм',
-      recommendations: [
-        'Консультація андролога',
-        'УЗД мошонки',
-        'Перевірка ЛГ, ФСГ, пролактину',
-        'Розгляд ГЗТ або стимулюючої терапії'
-      ]
-    }
-  },
-
-  // ===========================================
-  // ІНІЦІАЛІЗАЦІЯ
-  // ===========================================
-  init: function() {
-    // Ініціалізуємо генератор звітів з посиланням на цей об'єкт
-    this.report_generator = this.report_generator.init(this);
-    return this;
-  }
-};
-
-// Ініціалізація та експорт
-const LabInterpreter = COMPREHENSIVE_LAB_INTERPRETER.init();
-
-// Приклад використання:
-/*
-const userData = {
-  symptoms: ['fatigue', 'weight_gain', 'cold_intolerance'],
-  lab_results: {
-    TSH: 5.2,
-    vitamin_d: 18,
-    ferritin: 25,
-    testosterone_total: 8.5
-  },
-  user_info: {
-    age: 35,
-    gender: 'чоловік'
-  }
-};
-
-const report = LabInterpreter.report_generator.generatePersonalizedReport(userData);
-console.log(report);
-*/
-
-export default LabInterpreter;
