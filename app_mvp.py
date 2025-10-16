@@ -9,6 +9,7 @@ from steroids import SteroidAgent
 from logger_agent import LoggerAgent
 from subscription_manager import SubscriptionManager
 from pay import create_payment, check_payment_status
+from assistant.steroids.supplements import SupplementsDatabase
 import openai
 import json
 import datetime
@@ -22,8 +23,9 @@ security_agent = SecurityAgent()
 steroid_agent = SteroidAgent()
 logger_agent = LoggerAgent()
 subscription_manager = SubscriptionManager()
+supplements_db = SupplementsDatabase()
 
-# Налаштування OpenAI (ключ із .env у майбутньому)
+# Налаштування OpenAI
 openai.api_key = "your-openai-api-key-here"
 
 class UserInput(BaseModel):
@@ -39,7 +41,7 @@ class TestInput(BaseModel):
 class CourseSelection(BaseModel):
     course_name: str
     action: str  # "select" або "start"
-    supplements: List[str] = None  # ID БАДів для курсу
+    supplements: List[str] = None
 
 class SupplementStackInput(BaseModel):
     user_id: str
@@ -48,7 +50,7 @@ class SupplementStackInput(BaseModel):
 class ProfileUpdate(BaseModel):
     weight: float
     user_id: str
-    goals: dict = {}  # Структура: short_term, mid_term, long_term
+    goals: dict = {}
 
 class NotificationSubscription(BaseModel):
     user_id: str
@@ -57,22 +59,35 @@ class NotificationSubscription(BaseModel):
 
 class ProgressInput(BaseModel):
     user_id: str
-    rating: str  # "позитивна", "середня", "негативна"
+    rating: str
 
 class AnalysisInput(BaseModel):
     user_id: str
-    analyses: list  # Список: [{"type": "testosterone", "value": 300, "date": "2025-10-12"}]
+    analyses: list
 
 class PaymentInput(BaseModel):
     user_id: str
-    item: str  # "interaction", "analysis", "package", "module", "supplement_plan"
-    item_id: str | None = None  # ID пакета або модуля
-    amount: int  # Кількість пакетів (1 пакет = 30 запитів/аналізів)
-    usdt_address: str  # Адреса для оплати USDT
+    item: str
+    item_id: str | None = None
+    amount: int
+    usdt_address: str
 
 class PaymentCheckInput(BaseModel):
     user_id: str
-    payment_id: str  # ID платежу
+    payment_id: str
+
+class CartItem(BaseModel):
+    product_id: str
+    quantity: int
+
+class CartInput(BaseModel):
+    user_id: str
+    items: List[CartItem]
+
+class CheckoutInput(BaseModel):
+    user_id: str
+    cart_id: str
+    usdt_address: str
 
 @app.post("/api/auth/register")
 async def register(user_id: str, email: str):
@@ -174,6 +189,86 @@ async def start_supplement_stack(stack: SupplementStackInput):
 
     result = steroid_agent.start_supplement_stack(stack.user_id, stack.supplement_ids)
     return {"message": result["message"]}
+
+@app.post("/api/cycles/catalog")
+async def get_cycles_catalog(user_id: str, category: str = "all"):
+    """Отримання каталогу курсів."""
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+
+    security_agent.check_user(user_id)
+    subscription_manager.check_interaction_limit(user_id)
+
+    user_data = former_user.get_user_data(user_id)
+    cycles = steroid_agent._get_cycle_data(category if category != "all" else None)
+    catalog = {
+        "short_cycles": [c for c in cycles if c["category"] in ["bulking", "cutting"]],
+        "medium_cycles": [c for c in cycles if c["category"] in ["recomp"]],
+        "long_cycles": [c for c in cycles if c["category"] in ["strength"]],
+        "user_recommendations": steroid_agent.get_recommendations("", user_id).get("cycles", []),
+        "filters_available": ["duration", "goal", "experience_level", "budget", "compounds"],
+        "sorting_options": [
+            {"value": "recommended", "label": "Рекомендовано для вас"},
+            {"value": "price_low", "label": "Спочатку дешевші"},
+            {"value": "price_high", "label": "Спочатку дорожчі"},
+            {"value": "duration", "label": "За тривалістю"}
+        ]
+    }
+
+    logger_agent.log_request(user_id, "/api/cycles/catalog", logger_agent.token_usage_per_request)
+    return {"catalog": catalog}
+
+@app.post("/api/shop/cart")
+async def manage_cart(cart: CartInput):
+    """Керування кошиком."""
+    if not cart.user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+
+    security_agent.check_user(cart.user_id)
+    subscription_manager.check_interaction_limit(cart.user_id)
+
+    cart_id = str(former_user.get_user_data(cart.user_id).get("cart_id", datetime.datetime.utcnow().isoformat()))
+    cart_items = [{"product_id": item.product_id, "quantity": item.quantity} for item in cart.items]
+    total_price = sum(supplements_db.supplements[product_id].cost_usd * qty for item in cart_items for product_id, qty in [(item["product_id"], item["quantity"])])
+    
+    former_user.update_user_data(cart.user_id, {
+        "cart_id": cart_id,
+        "cart_items": cart_items,
+        "cart_total": total_price
+    })
+
+    logger_agent.log_request(cart.user_id, "/api/shop/cart", logger_agent.token_usage_per_request)
+    return {"cart_id": cart_id, "items": cart_items, "total_price": total_price}
+
+@app.post("/api/shop/checkout")
+async def checkout(checkout: CheckoutInput):
+    """Оформлення замовлення."""
+    if not checkout.user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+
+    security_agent.check_user(checkout.user_id)
+    subscription_manager.check_interaction_limit(checkout.user_id)
+
+    user_data = former_user.get_user_data(checkout.user_id)
+    cart = user_data.get("cart_items", [])
+    if not cart:
+        raise HTTPException(status_code=400, detail="Кошик порожній")
+
+    payment = await create_payment(PaymentInput(
+        user_id=checkout.user_id,
+        item="supplement_purchase",
+        item_id=checkout.cart_id,
+        amount=len(cart),
+        usdt_address=checkout.usdt_address
+    ))
+
+    if payment.get("status") == "success":
+        supplement_ids = [item["product_id"] for item in cart]
+        steroid_agent.start_supplement_stack(checkout.user_id, supplement_ids)
+        former_user.update_user_data(checkout.user_id, {"cart_items": [], "cart_total": 0})
+    
+    logger_agent.log_subscription_event(checkout.user_id, "shop_checkout", f"Checkout completed for cart {checkout.cart_id}")
+    return payment
 
 @app.post("/api/profile")
 async def update_profile(profile: ProfileUpdate):
