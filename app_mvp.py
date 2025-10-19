@@ -1,5 +1,7 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import List, Dict, Optional
 from ui_agent import UIAgent
 from orchestrator import Orchestrator
 from former_user import FormerUser
@@ -17,6 +19,16 @@ import json
 import datetime
 
 app = FastAPI()
+
+# Додавання CORS для фронтенду
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # Додай продакшн URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 ui_agent = UIAgent()
 orchestrator = Orchestrator()
 former_user = FormerUser()
@@ -27,7 +39,7 @@ logger_agent = LoggerAgent()
 subscription_manager = SubscriptionManager()
 products_db = ProductsDatabase()
 blood_interpreter = BloodInterpreter()
-telegram_bot = TelegramBot("your-telegram-token-here")  # Заміни на реальний токен
+telegram_bot = TelegramBot("8116552220:AAHiOZdROOQKtj09ZDvLRYZw2FNKPQrmMV4")
 
 openai.api_key = "your-openai-api-key-here"
 
@@ -45,6 +57,7 @@ class CourseSelection(BaseModel):
     course_name: str
     action: str
     supplements: List[str] = None
+    user_id: str
 
 class SupplementStackInput(BaseModel):
     user_id: str
@@ -93,6 +106,11 @@ class CheckoutInput(BaseModel):
     cart_id: str
     usdt_address: str
 
+# Оновлення цін у products_db
+products_db.update_product("ashwagandha", {"price_usd": 1.3})
+products_db.update_product("magnesium", {"price_usd": 1.3})
+products_db.update_product("retinol_serum", {"price_usd": 1.3})
+
 # Core
 @app.post("/api/auth/register")
 async def register(user_id: str, email: str):
@@ -101,11 +119,11 @@ async def register(user_id: str, email: str):
         "subscription_start": datetime.datetime.utcnow().isoformat(),
         "subscription_end": (datetime.datetime.utcnow() + datetime.timedelta(days=150)).isoformat()
     })
-    return {"message": f"User {user_id} registered with email {email}", "token": "jwt-placeholder"}
+    return {"message": f"Користувач {user_id} зареєстрований з email {email}", "token": "jwt-placeholder"}
 
 @app.post("/api/auth/login")
 async def login(user_id: str, email: str):
-    return {"message": f"User {user_id} logged in", "token": "jwt-placeholder"}
+    return {"message": f"Користувач {user_id} увійшов", "token": "jwt-placeholder"}
 
 # AI / Agents
 @app.post("/api/user_input")
@@ -172,19 +190,19 @@ async def get_recommendations(user_input: UserInput):
 
 # Steroids
 @app.post("/api/course")
-async def select_course(course: CourseSelection, user_id: str):
-    if not user_id:
+async def select_course(course: CourseSelection):
+    if not course.user_id:
         raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
 
-    security_agent.check_user(user_id)
+    security_agent.check_user(course.user_id)
 
     if course.action == "select":
-        result = former_user.record_course(user_id, course.course_name, "select")
+        result = former_user.record_course(course.user_id, course.course_name, "select")
         return {"message": result["message"]}
     elif course.action == "start":
-        result = steroid_agent.start_course(user_id, course.course_name, course.supplements)
+        result = steroid_agent.start_course(course.user_id, course.course_name, course.supplements)
         return {"message": result["message"]}
-    raise HTTPException(status_code=400, detail="Invalid action")
+    raise HTTPException(status_code=400, detail="Невалідна дія")
 
 @app.post("/api/supplements")
 async def start_supplement_stack(stack: SupplementStackInput):
@@ -198,7 +216,7 @@ async def start_supplement_stack(stack: SupplementStackInput):
     return {"message": result["message"]}
 
 @app.get("/api/cycles/catalog")
-async def get_cycles_catalog(user_id: str, category: str = "all", administration: str = None):
+async def get_cycles_catalog(user_id: str, category: str = "all", administration: str = None, experience_level: str = None, price_range: str = None, side_effects: List[str] = None):
     if not user_id:
         raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
 
@@ -206,13 +224,29 @@ async def get_cycles_catalog(user_id: str, category: str = "all", administration
     subscription_manager.check_interaction_limit(user_id)
 
     user_data = former_user.get_user_data(user_id)
-    cycles = steroid_agent._get_cycle_data(category if category != "all" else None, administration)
+    cycles = steroid_agent.get_recommendations("", user_id).get("cycles", [])
+    
+    # Фільтрація за параметрами
+    if administration:
+        cycles = [c for c in cycles if c["administration"] == administration]
+    if experience_level:
+        cycles = [c for c in cycles if c["experience_level"] == experience_level]
+    if price_range:
+        if price_range == "budget":
+            cycles = [c for c in cycles if c["cost_usd"] < 100]
+        elif price_range == "mid":
+            cycles = [c for c in cycles if 100 <= c["cost_usd"] <= 200]
+        elif price_range == "premium":
+            cycles = [c for c in cycles if c["cost_usd"] > 200]
+    if side_effects:
+        cycles = [c for c in cycles if all(se in c["side_effects"] for se in side_effects)]
+
     catalog = {
-        "short_cycles": [c for c in cycles if c["category"] in ["bulking", "cutting"]],
-        "medium_cycles": [c for c in cycles if c["category"] in ["recomp"]],
-        "long_cycles": [c for c in cycles if c["category"] in ["strength"]],
-        "user_recommendations": steroid_agent.get_recommendations("", user_id).get("cycles", []),
-        "filters_available": ["duration", "goal", "experience_level", "budget", "compounds", "administration"],
+        "short_cycles": [c for c in cycles if c["duration"] in ["6 weeks", "8 weeks"]],
+        "medium_cycles": [c for c in cycles if c["duration"] in ["10 weeks", "12 weeks"]],
+        "long_cycles": [c for c in cycles if c["duration"] in ["16 weeks"]],
+        "user_recommendations": cycles,
+        "filters_available": ["duration", "goal", "experience_level", "budget", "compounds", "administration", "side_effects"],
         "sorting_options": [
             {"value": "recommended", "label": "Рекомендовано для вас"},
             {"value": "price_low", "label": "Спочатку дешевші"},
@@ -225,18 +259,6 @@ async def get_cycles_catalog(user_id: str, category: str = "all", administration
     return {"catalog": catalog}
 
 # Shop
-@app.get("/api/shop/products")
-async def get_shop_products(category: str = None):
-    if not request.headers.get("user_id"):
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-
-    user_id = request.headers.get("user_id")
-    security_agent.check_user(user_id)
-    subscription_manager.check_interaction_limit(user_id)
-
-    products = products_db.get_products(category)
-    return {"products": [p.__dict__ for p in products]}
-
 @app.post("/api/shop/cart")
 async def manage_cart(cart: CartInput):
     if not cart.user_id:
@@ -287,10 +309,15 @@ async def checkout(checkout: CheckoutInput):
     logger_agent.log_subscription_event(checkout.user_id, "shop_checkout", f"Checkout completed for cart {checkout.cart_id}")
     return payment
 
+@app.get("/api/shop/products")
+async def get_products(category: str = None):
+    products = products_db.get_products(category)
+    return {"products": [p.__dict__ for p in products]}
+
 @app.post("/api/shop/connect_messenger")
 async def connect_messenger(data: Dict):
     user_id = data.get("user_id")
-    messenger = data.get("messenger")  # 'telegram' або 'viber'
+    messenger = data.get("messenger")
     messenger_id = data.get("messenger_id")
 
     if not all([user_id, messenger, messenger_id]):
@@ -384,9 +411,9 @@ async def upload_analyses(analysis: AnalysisInput):
         result = blood_interpreter.interpret_analysis(analysis.user_id, item, analysis.symptoms)
         results.append(result)
 
-    return {"message": "Analyses processed successfully", "results": results}
+    return {"message": "Аналіз оброблено успішно", "results": results}
 
-# Balance
+# Payments
 @app.get("/api/balance")
 async def get_balance(user_id: str):
     if not user_id:
@@ -395,7 +422,6 @@ async def get_balance(user_id: str):
     security_agent.check_user(user_id)
     return subscription_manager.get_balance(user_id)
 
-# Payments
 @app.post("/api/payments")
 async def process_payment(payment: PaymentInput):
     if not payment.user_id:
@@ -420,7 +446,7 @@ async def reset_limits(user_id: str):
 
     security_agent.check_user(user_id)
     subscription_manager.reset_interaction_limit(user_id)
-    return {"message": f"Interaction limit reset for user {user_id}"}
+    return {"message": f"Ліміти скинуто для користувача {user_id}"}
 
 # Health Check
 @app.get("/api/health")
@@ -437,38 +463,33 @@ async def wearable_data():
 async def web3_login():
     return {"message": "Web3 логін ще не реалізований."}
 
-# Нові розділи (заглушки для майбутньої реалізації)
+# Нові розділи (заглушки)
 @app.get("/api/womens_health")
 async def womens_health(user_id: str):
     if not user_id:
         raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-
     return {"message": "Розділ жіночого здоров’я в розробці (гормональний баланс, ПМС, менопауза, ПКЯ)." }
 
 @app.get("/api/diets")
 async def diets(user_id: str):
     if not user_id:
         raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-
     return {"message": "Розділ дієт в розробці (кето, палео, веган, інтервальне голодування)." }
 
 @app.get("/api/antifitness")
 async def antifitness(user_id: str):
     if not user_id:
         raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-
     return {"message": "Розділ антифітнесу в розробці (відновлення, йога, пілатес)." }
 
 @app.get("/api/cosmetology")
 async def cosmetology(user_id: str):
     if not user_id:
         raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-
     return {"message": "Розділ косметології та луксмаксингу в розробці (догляд за шкірою, ін’єкції, лазери)." }
 
 @app.get("/api/pharma")
 async def pharma(user_id: str):
     if not user_id:
         raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-
     return {"message": "Розділ фармакології в розробці (ААС, гормони, пептиди)." }
