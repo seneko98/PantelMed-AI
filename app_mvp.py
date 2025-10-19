@@ -1,5 +1,4 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 from ui_agent import UIAgent
@@ -19,16 +18,6 @@ import json
 import datetime
 
 app = FastAPI()
-
-# Додавання CORS для фронтенду
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Додай продакшн URL
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 ui_agent = UIAgent()
 orchestrator = Orchestrator()
 former_user = FormerUser()
@@ -39,7 +28,7 @@ logger_agent = LoggerAgent()
 subscription_manager = SubscriptionManager()
 products_db = ProductsDatabase()
 blood_interpreter = BloodInterpreter()
-telegram_bot = TelegramBot("8116552220:AAHiOZdROOQKtj09ZDvLRYZw2FNKPQrmMV4")
+telegram_bot = TelegramBot("8116552220:AAHiOZdROOQKtj09ZDvLRYZw2FNKPQrmMV4")  # Реальний Telegram-токен
 
 openai.api_key = "your-openai-api-key-here"
 
@@ -93,24 +82,6 @@ class PaymentCheckInput(BaseModel):
     user_id: str
     payment_id: str
 
-class CartItem(BaseModel):
-    product_id: str
-    quantity: int
-
-class CartInput(BaseModel):
-    user_id: str
-    items: List[CartItem]
-
-class CheckoutInput(BaseModel):
-    user_id: str
-    cart_id: str
-    usdt_address: str
-
-# Оновлення цін у products_db
-products_db.update_product("ashwagandha", {"price_usd": 1.3})
-products_db.update_product("magnesium", {"price_usd": 1.3})
-products_db.update_product("retinol_serum", {"price_usd": 1.3})
-
 # Core
 @app.post("/api/auth/register")
 async def register(user_id: str, email: str):
@@ -119,11 +90,11 @@ async def register(user_id: str, email: str):
         "subscription_start": datetime.datetime.utcnow().isoformat(),
         "subscription_end": (datetime.datetime.utcnow() + datetime.timedelta(days=150)).isoformat()
     })
-    return {"message": f"Користувач {user_id} зареєстрований з email {email}", "token": "jwt-placeholder"}
+    return {"message": f"User {user_id} registered with email {email}", "token": "jwt-placeholder"}
 
 @app.post("/api/auth/login")
 async def login(user_id: str, email: str):
-    return {"message": f"Користувач {user_id} увійшов", "token": "jwt-placeholder"}
+    return {"message": f"User {user_id} logged in", "token": "jwt-placeholder"}
 
 # AI / Agents
 @app.post("/api/user_input")
@@ -317,7 +288,7 @@ async def get_products(category: str = None):
 @app.post("/api/shop/connect_messenger")
 async def connect_messenger(data: Dict):
     user_id = data.get("user_id")
-    messenger = data.get("messenger")
+    messenger = data.get("messenger")  # 'telegram' або 'viber'
     messenger_id = data.get("messenger_id")
 
     if not all([user_id, messenger, messenger_id]):
@@ -406,12 +377,13 @@ async def upload_analyses(analysis: AnalysisInput):
     security_agent.check_user(analysis.user_id)
     subscription_manager.check_analysis_limit(analysis.user_id)
 
+    interpreter = BloodInterpreter()
     results = []
     for item in analysis.analyses:
-        result = blood_interpreter.interpret_analysis(analysis.user_id, item, analysis.symptoms)
+        result = interpreter.interpret_analysis(analysis.user_id, item, analysis.symptoms)
         results.append(result)
 
-    return {"message": "Аналіз оброблено успішно", "results": results}
+    return {"message": "Analyses processed successfully", "results": results}
 
 # Payments
 @app.get("/api/balance")
@@ -446,7 +418,7 @@ async def reset_limits(user_id: str):
 
     security_agent.check_user(user_id)
     subscription_manager.reset_interaction_limit(user_id)
-    return {"message": f"Ліміти скинуто для користувача {user_id}"}
+    return {"message": f"Interaction limit reset for user {user_id}"}
 
 # Health Check
 @app.get("/api/health")
