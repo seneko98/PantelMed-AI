@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import List, Dict, Optional
 from ui_agent import UIAgent
 from orchestrator import Orchestrator
 from former_user import FormerUser
@@ -9,7 +10,9 @@ from steroids import SteroidAgent
 from logger_agent import LoggerAgent
 from subscription_manager import SubscriptionManager
 from pay import create_payment, check_payment_status
-from assistant.steroids.supplements import SupplementsDatabase
+from products import ProductsDatabase
+from blood_interpreter import BloodInterpreter
+from telegram import TelegramBot
 import openai
 import json
 import datetime
@@ -23,9 +26,10 @@ security_agent = SecurityAgent()
 steroid_agent = SteroidAgent()
 logger_agent = LoggerAgent()
 subscription_manager = SubscriptionManager()
-supplements_db = SupplementsDatabase()
+products_db = ProductsDatabase()
+blood_interpreter = BloodInterpreter()
+telegram_bot = TelegramBot("8116552220:AAHiOZdROOQKtj09ZDvLRYZw2FNKPQrmMV4")  # Реальний Telegram-токен
 
-# Налаштування OpenAI
 openai.api_key = "your-openai-api-key-here"
 
 class UserInput(BaseModel):
@@ -40,7 +44,7 @@ class TestInput(BaseModel):
 
 class CourseSelection(BaseModel):
     course_name: str
-    action: str  # "select" або "start"
+    action: str
     supplements: List[str] = None
 
 class SupplementStackInput(BaseModel):
@@ -64,6 +68,7 @@ class ProgressInput(BaseModel):
 class AnalysisInput(BaseModel):
     user_id: str
     analyses: list
+    symptoms: List[str] = None
 
 class PaymentInput(BaseModel):
     user_id: str
@@ -89,6 +94,7 @@ class CheckoutInput(BaseModel):
     cart_id: str
     usdt_address: str
 
+# Core
 @app.post("/api/auth/register")
 async def register(user_id: str, email: str):
     former_user.update_user_data(user_id, {
@@ -96,12 +102,13 @@ async def register(user_id: str, email: str):
         "subscription_start": datetime.datetime.utcnow().isoformat(),
         "subscription_end": (datetime.datetime.utcnow() + datetime.timedelta(days=150)).isoformat()
     })
-    return {"message": f"User {user_id} registered with email {email}", "token": "jwt-placeholder"}
+    return {"message": f"Користувач {user_id} зареєстрований з email {email}", "token": "jwt-placeholder"}
 
 @app.post("/api/auth/login")
 async def login(user_id: str, email: str):
-    return {"message": f"User {user_id} logged in", "token": "jwt-placeholder"}
+    return {"message": f"Користувач {user_id} увійшов", "token": "jwt-placeholder"}
 
+# AI / Agents
 @app.post("/api/user_input")
 async def handle_user_input(user_input: UserInput):
     if not user_input.user_id:
@@ -164,20 +171,21 @@ async def get_recommendations(user_input: UserInput):
 
     return ui_agent.format_response(response, user_input.language)
 
+# Steroids
 @app.post("/api/course")
-async def select_course(course: CourseSelection, user_id: str):
-    if not user_id:
+async def select_course(course: CourseSelection):
+    if not course.user_id:
         raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
 
-    security_agent.check_user(user_id)
+    security_agent.check_user(course.user_id)
 
     if course.action == "select":
-        result = former_user.record_course(user_id, course.course_name, "select")
+        result = former_user.record_course(course.user_id, course.course_name, "select")
         return {"message": result["message"]}
     elif course.action == "start":
-        result = steroid_agent.start_course(user_id, course.course_name, course.supplements)
+        result = steroid_agent.start_course(course.user_id, course.course_name, course.supplements)
         return {"message": result["message"]}
-    raise HTTPException(status_code=400, detail="Invalid action")
+    raise HTTPException(status_code=400, detail="Невалідна дія")
 
 @app.post("/api/supplements")
 async def start_supplement_stack(stack: SupplementStackInput):
@@ -190,9 +198,8 @@ async def start_supplement_stack(stack: SupplementStackInput):
     result = steroid_agent.start_supplement_stack(stack.user_id, stack.supplement_ids)
     return {"message": result["message"]}
 
-@app.post("/api/cycles/catalog")
-async def get_cycles_catalog(user_id: str, category: str = "all"):
-    """Отримання каталогу курсів."""
+@app.get("/api/cycles/catalog")
+async def get_cycles_catalog(user_id: str, category: str = "all", administration: str = None, experience_level: str = None, price_range: str = None, side_effects: List[str] = None):
     if not user_id:
         raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
 
@@ -200,13 +207,29 @@ async def get_cycles_catalog(user_id: str, category: str = "all"):
     subscription_manager.check_interaction_limit(user_id)
 
     user_data = former_user.get_user_data(user_id)
-    cycles = steroid_agent._get_cycle_data(category if category != "all" else None)
+    cycles = steroid_agent.get_recommendations("", user_id).get("cycles", [])
+    
+    # Фільтрація за новими параметрами
+    if administration:
+        cycles = [c for c in cycles if c["administration"] == administration]
+    if experience_level:
+        cycles = [c for c in cycles if c["experience_level"] == experience_level]
+    if price_range:
+        if price_range == "budget":
+            cycles = [c for c in cycles if c["cost_usd"] < 100]
+        elif price_range == "mid":
+            cycles = [c for c in cycles if 100 <= c["cost_usd"] <= 200]
+        elif price_range == "premium":
+            cycles = [c for c in cycles if c["cost_usd"] > 200]
+    if side_effects:
+        cycles = [c for c in cycles if all(se in c["side_effects"] for se in side_effects)]
+
     catalog = {
-        "short_cycles": [c for c in cycles if c["category"] in ["bulking", "cutting"]],
-        "medium_cycles": [c for c in cycles if c["category"] in ["recomp"]],
-        "long_cycles": [c for c in cycles if c["category"] in ["strength"]],
-        "user_recommendations": steroid_agent.get_recommendations("", user_id).get("cycles", []),
-        "filters_available": ["duration", "goal", "experience_level", "budget", "compounds"],
+        "short_cycles": [c for c in cycles if c["duration"] in ["6 weeks", "8 weeks"]],
+        "medium_cycles": [c for c in cycles if c["duration"] in ["10 weeks", "12 weeks"]],
+        "long_cycles": [c for c in cycles if c["duration"] in ["16 weeks"]],
+        "user_recommendations": cycles,
+        "filters_available": ["duration", "goal", "experience_level", "budget", "compounds", "administration", "side_effects"],
         "sorting_options": [
             {"value": "recommended", "label": "Рекомендовано для вас"},
             {"value": "price_low", "label": "Спочатку дешевші"},
@@ -218,9 +241,9 @@ async def get_cycles_catalog(user_id: str, category: str = "all"):
     logger_agent.log_request(user_id, "/api/cycles/catalog", logger_agent.token_usage_per_request)
     return {"catalog": catalog}
 
+# Shop
 @app.post("/api/shop/cart")
 async def manage_cart(cart: CartInput):
-    """Керування кошиком."""
     if not cart.user_id:
         raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
 
@@ -229,7 +252,7 @@ async def manage_cart(cart: CartInput):
 
     cart_id = str(former_user.get_user_data(cart.user_id).get("cart_id", datetime.datetime.utcnow().isoformat()))
     cart_items = [{"product_id": item.product_id, "quantity": item.quantity} for item in cart.items]
-    total_price = sum(supplements_db.supplements[product_id].cost_usd * qty for item in cart_items for product_id, qty in [(item["product_id"], item["quantity"])])
+    total_price = sum(products_db.get_product(item["product_id"]).price_usd * item["quantity"] for item in cart_items)
     
     former_user.update_user_data(cart.user_id, {
         "cart_id": cart_id,
@@ -242,7 +265,6 @@ async def manage_cart(cart: CartInput):
 
 @app.post("/api/shop/checkout")
 async def checkout(checkout: CheckoutInput):
-    """Оформлення замовлення."""
     if not checkout.user_id:
         raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
 
@@ -270,6 +292,33 @@ async def checkout(checkout: CheckoutInput):
     logger_agent.log_subscription_event(checkout.user_id, "shop_checkout", f"Checkout completed for cart {checkout.cart_id}")
     return payment
 
+@app.get("/api/shop/products")
+async def get_products(category: str = None):
+    products = products_db.get_products(category)
+    return {"products": [p.__dict__ for p in products]}
+
+@app.post("/api/shop/connect_messenger")
+async def connect_messenger(data: Dict):
+    user_id = data.get("user_id")
+    messenger = data.get("messenger")  # 'telegram' або 'viber'
+    messenger_id = data.get("messenger_id")
+
+    if not all([user_id, messenger, messenger_id]):
+        raise HTTPException(status_code=400, detail="Потрібні user_id, messenger і messenger_id")
+
+    security_agent.check_user(user_id)
+
+    updates = {"updated_at": datetime.datetime.utcnow().isoformat()}
+    if messenger == "telegram":
+        updates["telegram_id"] = messenger_id
+    elif messenger == "viber":
+        updates["viber_id"] = messenger_id
+    former_user.update_user_data(user_id, updates)
+
+    logger_agent.log_request(user_id, "/api/shop/connect_messenger", 0)
+    return {"status": "success", "message": f"Підключено {messenger} для {user_id}"}
+
+# Profile
 @app.post("/api/profile")
 async def update_profile(profile: ProfileUpdate):
     if not profile.user_id:
@@ -306,6 +355,7 @@ async def get_profile(user_id: str):
     
     return {"profile": user_data}
 
+# Notifications
 @app.post("/api/subscribe_notifications")
 async def subscribe_notifications(subscription: NotificationSubscription):
     if not subscription.user_id:
@@ -318,6 +368,7 @@ async def subscribe_notifications(subscription: NotificationSubscription):
     })
     return {"message": f"Підписка на сповіщення для {subscription.supplements} активована через Telegram."}
 
+# Progress
 @app.post("/api/check_progress")
 async def check_progress(progress: ProgressInput):
     if not progress.user_id:
@@ -329,6 +380,7 @@ async def check_progress(progress: ProgressInput):
     response = steroid_agent.check_progress(progress.user_id, user_data, progress.rating)
     return response
 
+# Analyses
 @app.post("/api/analyses")
 async def upload_analyses(analysis: AnalysisInput):
     if not analysis.user_id:
@@ -337,11 +389,14 @@ async def upload_analyses(analysis: AnalysisInput):
     security_agent.check_user(analysis.user_id)
     subscription_manager.check_analysis_limit(analysis.user_id)
 
+    results = []
     for item in analysis.analyses:
-        former_user.add_analysis(analysis.user_id, item["type"], item["value"], item["date"])
+        result = blood_interpreter.interpret_analysis(analysis.user_id, item, analysis.symptoms)
+        results.append(result)
 
-    return {"message": "Analyses uploaded successfully"}
+    return {"message": "Аналіз оброблено успішно", "results": results}
 
+# Payments
 @app.get("/api/balance")
 async def get_balance(user_id: str):
     if not user_id:
@@ -366,6 +421,7 @@ async def check_payment(check: PaymentCheckInput):
     security_agent.check_user(check.user_id)
     return await check_payment_status(check)
 
+# Admin
 @app.post("/api/reset_limits")
 async def reset_limits(user_id: str):
     if not user_id:
@@ -373,16 +429,50 @@ async def reset_limits(user_id: str):
 
     security_agent.check_user(user_id)
     subscription_manager.reset_interaction_limit(user_id)
-    return {"message": f"Interaction limit reset for user {user_id}"}
+    return {"message": f"Ліміти скинуто для користувача {user_id}"}
 
+# Health Check
 @app.get("/api/health")
 async def health_check():
     return {"status": "healthy", "version": "1.0.0"}
 
+# Wearables
 @app.get("/api/wearable")
 async def wearable_data():
-    return {"message": "Wearable integration not implemented yet."}
+    return {"message": "Інтеграція з носимими пристроями ще не реалізована."}
 
+# Web3
 @app.get("/api/web3_login")
 async def web3_login():
-    return {"message": "Web3 login not implemented yet."}
+    return {"message": "Web3 логін ще не реалізований."}
+
+# Нові розділи (заглушки для майбутньої реалізації)
+@app.get("/api/womens_health")
+async def womens_health(user_id: str):
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+    return {"message": "Розділ жіночого здоров’я в розробці (гормональний баланс, ПМС, менопауза, ПКЯ)." }
+
+@app.get("/api/diets")
+async def diets(user_id: str):
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+    return {"message": "Розділ дієт в розробці (кето, палео, веган, інтервальне голодування)." }
+
+@app.get("/api/antifitness")
+async def antifitness(user_id: str):
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+    return {"message": "Розділ антифітнесу в розробці (відновлення, йога, пілатес)." }
+
+@app.get("/api/cosmetology")
+async def cosmetology(user_id: str):
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+    return {"message": "Розділ косметології та луксмаксингу в розробці (догляд за шкірою, ін’єкції, лазери)." }
+
+@app.get("/api/pharma")
+async def pharma(user_id: str):
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+    return {"message": "Розділ фармакології в розробці (ААС, гормони, пептиди)." }
