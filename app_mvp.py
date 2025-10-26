@@ -13,8 +13,11 @@ from pay import create_payment, check_payment_status
 from products import ProductsDatabase
 from blood_interpreter import BloodInterpreter
 from telegram import TelegramBot
+from womens_health_protocol import get_womens_health_protocol
+from nutrition import get_nutrition_protocol
+from antifitness import get_antifitness_protocol
+from cosmetology import get_skin_protocol
 import openai
-import json
 import datetime
 
 app = FastAPI()
@@ -28,10 +31,11 @@ logger_agent = LoggerAgent()
 subscription_manager = SubscriptionManager()
 products_db = ProductsDatabase()
 blood_interpreter = BloodInterpreter()
-telegram_bot = TelegramBot("8116552220:AAHiOZdROOQKtj09ZDvLRYZw2FNKPQrmMV4")  # Реальний Telegram-токен
+telegram_bot = TelegramBot("8116552220:AAHiOZdROOQKtj09ZDvLRYZw2FNKPQrmMV4")
 
 openai.api_key = "your-openai-api-key-here"
 
+# Моделі даних
 class UserInput(BaseModel):
     text: str
     language: str = "uk"
@@ -39,6 +43,10 @@ class UserInput(BaseModel):
 
 class TestInput(BaseModel):
     answers: dict
+    user_id: str
+    language: str = "uk"
+
+class TestResultsInput(BaseModel):
     user_id: str
     language: str = "uk"
 
@@ -56,6 +64,7 @@ class ProfileUpdate(BaseModel):
     weight: float
     user_id: str
     goals: dict = {}
+    gender: Optional[str] = None
 
 class NotificationSubscription(BaseModel):
     user_id: str
@@ -82,179 +91,167 @@ class PaymentCheckInput(BaseModel):
     user_id: str
     payment_id: str
 
-# Core
+class CartItem(BaseModel):
+    product_id: str
+    quantity: int
+
+class CartInput(BaseModel):
+    user_id: str
+    items: List[CartItem]
+
+class CheckoutInput(BaseModel):
+    user_id: str
+    cart_id: str
+    usdt_address: str
+
+# === АУТЕНТИФІКАЦІЯ ===
 @app.post("/api/auth/register")
-async def register(user_id: str, email: str):
+async def register(user_id: str, email: str, gender: str = None):
     former_user.update_user_data(user_id, {
         "email": email,
+        "gender": gender,
         "subscription_start": datetime.datetime.utcnow().isoformat(),
         "subscription_end": (datetime.datetime.utcnow() + datetime.timedelta(days=150)).isoformat()
     })
-    return {"message": f"User {user_id} registered with email {email}", "token": "jwt-placeholder"}
+    return {"message": f"Користувач {user_id} зареєстрований", "token": "jwt-placeholder"}
 
 @app.post("/api/auth/login")
 async def login(user_id: str, email: str):
-    return {"message": f"User {user_id} logged in", "token": "jwt-placeholder"}
+    return {"message": f"Користувач {user_id} увійшов", "token": "jwt-placeholder"}
 
-# AI / Agents
-@app.post("/api/user_input")
-async def handle_user_input(user_input: UserInput):
-    if not user_input.user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-
-    security_agent.check_user(user_input.user_id)
-    subscription_manager.check_interaction_limit(user_input.user_id)
-
-    validated_input = ui_agent.validate(user_input.text, user_input.language)
-    if not validated_input["valid"]:
-        raise HTTPException(status_code=400, detail=validated_input["error"])
-
-    user_data = former_user.get_user_data(user_input.user_id)
-    if user_data:
-        validated_input["history"] = user_data.get("history", [])
-        validated_input["user_id"] = user_input.user_id
-
-    response = orchestrator.process(validated_input)
-    logger_agent.log_request(user_input.user_id, "/api/user_input", logger_agent.token_usage_per_request)
-
-    former_user.update_user_data(user_input.user_id, {
-        "history": validated_input["history"] + [{"input": user_input.text, "response": response, "type": "query"}]
-    })
-
-    return ui_agent.format_response(response, user_input.language)
-
+# === ТЕСТ НА ЗДОРОВ'Я ===
 @app.post("/api/test")
 async def handle_test(test_input: TestInput):
     if not test_input.user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id")
+    
     security_agent.check_user(test_input.user_id)
-
     prompt = f"Аналізуй відповіді тесту: {json.dumps(test_input.answers)}. Пропонуй цілі та рекомендації."
     response = clinical_agent.analyze(prompt, former_user.get_user_data(test_input.user_id).get("history", []))
     
     former_user.update_user_data(test_input.user_id, {
+        "test_results": test_input.answers,
+        "test_timestamp": datetime.datetime.utcnow().isoformat(),
         "history": [{"input": test_input.answers, "response": response, "type": "test"}]
     })
-
     return ui_agent.format_response(response, test_input.language)
 
-@app.post("/api/recommendations")
-async def get_recommendations(user_input: UserInput):
-    if not user_input.user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-
-    security_agent.check_user(user_input.user_id)
-    subscription_manager.check_interaction_limit(user_input.user_id)
-
-    user_data = former_user.get_user_data(user_input.user_id)
-    validated_input = {
-        "text": user_input.text,
-        "history": user_data.get("history", []),
-        "user_id": user_input.user_id
-    }
-
-    response = orchestrator.process(validated_input)
-    logger_agent.log_request(user_input.user_id, "/api/recommendations", logger_agent.token_usage_per_request)
-
-    return ui_agent.format_response(response, user_input.language)
-
-# Steroids
-@app.post("/api/course")
-async def select_course(course: CourseSelection):
-    if not course.user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-
-    security_agent.check_user(course.user_id)
-
-    if course.action == "select":
-        result = former_user.record_course(course.user_id, course.course_name, "select")
-        return {"message": result["message"]}
-    elif course.action == "start":
-        result = steroid_agent.start_course(course.user_id, course.course_name, course.supplements)
-        return {"message": result["message"]}
-    raise HTTPException(status_code=400, detail="Невалідна дія")
-
-@app.post("/api/supplements")
-async def start_supplement_stack(stack: SupplementStackInput):
-    if not stack.user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-
-    security_agent.check_user(stack.user_id)
-    subscription_manager.check_supplement_plan_limit(stack.user_id)
-
-    result = steroid_agent.start_supplement_stack(stack.user_id, stack.supplement_ids)
-    return {"message": result["message"]}
-
-@app.get("/api/cycles/catalog")
-async def get_cycles_catalog(user_id: str, category: str = "all", administration: str = None, experience_level: str = None, price_range: str = None, side_effects: List[str] = None):
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-
-    security_agent.check_user(user_id)
-    subscription_manager.check_interaction_limit(user_id)
-
-    user_data = former_user.get_user_data(user_id)
-    cycles = steroid_agent.get_recommendations("", user_id).get("cycles", [])
+@app.post("/api/test/results")
+async def get_test_results(test_input: TestResultsInput):
+    if not test_input.user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id")
     
-    # Фільтрація за параметрами
-    if administration:
-        cycles = [c for c in cycles if c["administration"] == administration]
-    if experience_level:
-        cycles = [c for c in cycles if c["experience_level"] == experience_level]
-    if price_range:
-        if price_range == "budget":
-            cycles = [c for c in cycles if c["cost_usd"] < 100]
-        elif price_range == "mid":
-            cycles = [c for c in cycles if 100 <= c["cost_usd"] <= 200]
-        elif price_range == "premium":
-            cycles = [c for c in cycles if c["cost_usd"] > 200]
-    if side_effects:
-        cycles = [c for c in cycles if all(se in c["side_effects"] for se in side_effects)]
-
-    catalog = {
-        "short_cycles": [c for c in cycles if c["duration"] in ["6 weeks", "8 weeks"]],
-        "medium_cycles": [c for c in cycles if c["duration"] in ["10 weeks", "12 weeks"]],
-        "long_cycles": [c for c in cycles if c["duration"] in ["16 weeks"]],
-        "user_recommendations": cycles,
-        "filters_available": ["duration", "goal", "experience_level", "budget", "compounds", "administration", "side_effects"],
-        "sorting_options": [
-            {"value": "recommended", "label": "Рекомендовано для вас"},
-            {"value": "price_low", "label": "Спочатку дешевші"},
-            {"value": "price_high", "label": "Спочатку дорожчі"},
-            {"value": "duration", "label": "За тривалістю"}
+    security_agent.check_user(test_input.user_id)
+    user_data = former_user.get_user_data(test_input.user_id)
+    
+    if not user_data.get("test_results"):
+        raise HTTPException(status_code=404, detail="Результати тесту не знайдено")
+    
+    # Перевірка підписки
+    is_subscribed = subscription_manager.check_subscription(test_input.user_id)
+    if not is_subscribed:
+        return {"message": "Оформіть підписку для детальних результатів"}
+    
+    # Перевірка ліміту повторного тесту (5-6 місяців)
+    test_timestamp = user_data.get("test_timestamp")
+    if test_timestamp:
+        last_test = datetime.datetime.fromisoformat(test_timestamp)
+        if (datetime.datetime.utcnow() - last_test).days < 150:
+            raise HTTPException(status_code=429, detail="Повторний тест доступний через 5-6 місяців")
+    
+    # Форматування результатів
+    results = {
+        "answers": user_data["test_results"],
+        "formatted": [
+            {
+                "question": q,
+                "selected_answer": a,
+                "unselected_answers": ["Інший варіант"]  # Заглушка для невибраних
+            } for q, a in user_data["test_results"].items()
         ]
     }
+    return {"results": results}
 
-    logger_agent.log_request(user_id, "/api/cycles/catalog", logger_agent.token_usage_per_request)
-    return {"catalog": catalog}
+# === AI-ЛІКАР ===
+@app.post("/api/ai_doctor")
+async def ai_doctor(user_input: UserInput):
+    if not user_input.user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id")
+    
+    security_agent.check_user(user_input.user_id)
+    subscription_manager.check_interaction_limit(user_input.user_id)
+    
+    validated_input = ui_agent.validate(user_input.text, user_input.language)
+    if not validated_input["valid"]:
+        raise HTTPException(status_code=400, detail=validated_input["error"])
+    
+    user_data = former_user.get_user_data(user_input.user_id)
+    validated_input["history"] = user_data.get("history", [])
+    validated_input["user_id"] = user_input.user_id
+    
+    response = orchestrator.process(validated_input)
+    logger_agent.log_request(user_input.user_id, "/api/ai_doctor", logger_agent.token_usage_per_request)
+    
+    former_user.update_user_data(user_input.user_id, {
+        "history": validated_input["history"] + [{"input": user_input.text, "response": response, "type": "ai_doctor"}]
+    })
+    
+    return ui_agent.format_response(response, user_input.language)
 
-# Shop
+# === АНТИЕЙДЖИНГ ===
+@app.post("/api/antiaging")
+async def antiaging(user_id: str):
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    security_agent.check_user(user_id)
+    subscription_manager.check_interaction_limit(user_id)
+    
+    # Тимчасово: базові рекомендації
+    protocol = {
+        "supplements": ["Колаген 10г", "Вітамін C 1г", "Ресвератрол 500мг"],
+        "lifestyle": ["Сон 7-8 годин", "SPF 50 щоденно"],
+        "generated_at": datetime.datetime.utcnow().isoformat()
+    }
+    return {"protocol": protocol}
+
+# === ЛУКСМАКСИНГ-КОСМЕТОЛОГІЯ ===
+@app.post("/api/cosmetology")
+async def cosmetology(user_id: str):
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    security_agent.check_user(user_id)
+    subscription_manager.check_interaction_limit(user_id)
+    
+    return {"protocol": await get_skin_protocol(user_id, payment_confirmed=False)}
+
+# === PANTELMED SHOP ===
 @app.post("/api/shop/cart")
 async def manage_cart(cart: CartInput):
     if not cart.user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     security_agent.check_user(cart.user_id)
     subscription_manager.check_interaction_limit(cart.user_id)
 
     cart_id = str(former_user.get_user_data(cart.user_id).get("cart_id", datetime.datetime.utcnow().isoformat()))
     cart_items = [{"product_id": item.product_id, "quantity": item.quantity} for item in cart.items]
-    total_price = sum(products_db.get_product(item["product_id"]).price_usd * item["quantity"] for item in cart_items)
+    total_price = sum(products_db.get_product(item["product_id"]).price_usd * item["quantity"] for item in cart.items)
     
     former_user.update_user_data(cart.user_id, {
         "cart_id": cart_id,
         "cart_items": cart_items,
         "cart_total": total_price
     })
-
+    
     logger_agent.log_request(cart.user_id, "/api/shop/cart", logger_agent.token_usage_per_request)
     return {"cart_id": cart_id, "items": cart_items, "total_price": total_price}
 
 @app.post("/api/shop/checkout")
 async def checkout(checkout: CheckoutInput):
     if not checkout.user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     security_agent.check_user(checkout.user_id)
     subscription_manager.check_interaction_limit(checkout.user_id)
@@ -306,11 +303,11 @@ async def connect_messenger(data: Dict):
     logger_agent.log_request(user_id, "/api/shop/connect_messenger", 0)
     return {"status": "success", "message": f"Підключено {messenger} для {user_id}"}
 
-# Profile
+# === ОСОБИСТИЙ КАБІНЕТ ===
 @app.post("/api/profile")
 async def update_profile(profile: ProfileUpdate):
     if not profile.user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id")
 
     security_agent.check_weight(profile.user_id, profile.weight)
     security_agent.check_goal_change(profile.user_id, profile.goals)
@@ -319,7 +316,7 @@ async def update_profile(profile: ProfileUpdate):
     if not user_data:
         return {"message": "Новий користувач. Пройдіть тест для створення профілю."}
 
-    former_user.update_user_data(profile.user_id, {
+    updates = {
         "weight": profile.weight,
         "goals": {
             "short_term": profile.goals.get("short_term", []),
@@ -327,27 +324,30 @@ async def update_profile(profile: ProfileUpdate):
             "long_term": profile.goals.get("long_term", [])
         },
         "history": user_data.get("history", []) + [{"input": {"weight": profile.weight, "goals": profile.goals}, "response": "Profile updated", "type": "profile"}]
-    })
+    }
+    if profile.gender:
+        updates["gender"] = profile.gender
+
+    former_user.update_user_data(profile.user_id, updates)
     return {"profile": former_user.get_user_data(profile.user_id)}
 
 @app.get("/api/profile")
 async def get_profile(user_id: str):
     if not user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id")
 
     security_agent.check_user(user_id)
-
     user_data = former_user.get_user_data(user_id)
     if not user_data:
         return {"message": "Новий користувач. Пройдіть тест для створення профілю."}
     
     return {"profile": user_data}
 
-# Notifications
+# === СПОВІЩЕННЯ ===
 @app.post("/api/subscribe_notifications")
 async def subscribe_notifications(subscription: NotificationSubscription):
     if not subscription.user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id")
 
     security_agent.check_user(subscription.user_id)
 
@@ -356,11 +356,11 @@ async def subscribe_notifications(subscription: NotificationSubscription):
     })
     return {"message": f"Підписка на сповіщення для {subscription.supplements} активована через Telegram."}
 
-# Progress
+# === ПРОГРЕС ===
 @app.post("/api/check_progress")
 async def check_progress(progress: ProgressInput):
     if not progress.user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id")
 
     security_agent.check_user(progress.user_id)
 
@@ -368,28 +368,27 @@ async def check_progress(progress: ProgressInput):
     response = steroid_agent.check_progress(progress.user_id, user_data, progress.rating)
     return response
 
-# Analyses
+# === АНАЛІЗИ ===
 @app.post("/api/analyses")
 async def upload_analyses(analysis: AnalysisInput):
     if not analysis.user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id")
 
     security_agent.check_user(analysis.user_id)
     subscription_manager.check_analysis_limit(analysis.user_id)
 
-    interpreter = BloodInterpreter()
     results = []
     for item in analysis.analyses:
-        result = interpreter.interpret_analysis(analysis.user_id, item, analysis.symptoms)
+        result = blood_interpreter.interpret_analysis(analysis.user_id, item, analysis.symptoms)
         results.append(result)
 
-    return {"message": "Analyses processed successfully", "results": results}
+    return {"message": "Аналіз оброблено", "results": results}
 
-# Payments
+# === ПЛАТЕЖІ ===
 @app.get("/api/balance")
 async def get_balance(user_id: str):
     if not user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id")
 
     security_agent.check_user(user_id)
     return subscription_manager.get_balance(user_id)
@@ -397,7 +396,7 @@ async def get_balance(user_id: str):
 @app.post("/api/payments")
 async def process_payment(payment: PaymentInput):
     if not payment.user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id")
 
     security_agent.check_user(payment.user_id)
     return await create_payment(payment)
@@ -405,63 +404,32 @@ async def process_payment(payment: PaymentInput):
 @app.post("/api/payments/check")
 async def check_payment(check: PaymentCheckInput):
     if not check.user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id")
 
     security_agent.check_user(check.user_id)
     return await check_payment_status(check)
 
-# Admin
+# === АДМІН ===
 @app.post("/api/reset_limits")
 async def reset_limits(user_id: str):
     if not user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
+        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id")
 
     security_agent.check_user(user_id)
     subscription_manager.reset_interaction_limit(user_id)
-    return {"message": f"Interaction limit reset for user {user_id}"}
+    return {"message": f"Ліміти скинуто для {user_id}"}
 
-# Health Check
+# === WEB3 ===
+@app.get("/api/web3_login")
+async def web3_login():
+    return {"message": "Web3 логін ще не реалізований"}
+
+# === НОСИМІ ПРИСТРОЇ ===
+@app.get("/api/wearable")
+async def wearable_data():
+    return {"message": "Інтеграція з носимими пристроями ще не реалізована"}
+
+# === HEALTH CHECK ===
 @app.get("/api/health")
 async def health_check():
     return {"status": "healthy", "version": "1.0.0"}
-
-# Wearables
-@app.get("/api/wearable")
-async def wearable_data():
-    return {"message": "Інтеграція з носимими пристроями ще не реалізована."}
-
-# Web3
-@app.get("/api/web3_login")
-async def web3_login():
-    return {"message": "Web3 логін ще не реалізований."}
-
-# Нові розділи (заглушки)
-@app.get("/api/womens_health")
-async def womens_health(user_id: str):
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-    return {"message": "Розділ жіночого здоров’я в розробці (гормональний баланс, ПМС, менопауза, ПКЯ)." }
-
-@app.get("/api/diets")
-async def diets(user_id: str):
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-    return {"message": "Розділ дієт в розробці (кето, палео, веган, інтервальне голодування)." }
-
-@app.get("/api/antifitness")
-async def antifitness(user_id: str):
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-    return {"message": "Розділ антифітнесу в розробці (відновлення, йога, пілатес)." }
-
-@app.get("/api/cosmetology")
-async def cosmetology(user_id: str):
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-    return {"message": "Розділ косметології та луксмаксингу в розробці (догляд за шкірою, ін’єкції, лазери)." }
-
-@app.get("/api/pharma")
-async def pharma(user_id: str):
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Unauthorized: Provide user_id or login")
-    return {"message": "Розділ фармакології в розробці (ААС, гормони, пептиди)." }
