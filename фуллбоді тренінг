@@ -1,0 +1,143 @@
+# antifitness_core_v1_2.py
+# Фінальна стартова версія 1.2 — основа Антифітнес для PantelMed
+# Превентивна система: нервовий → структурний → м'язовий ріст + здоров'я + антиейджинг
+
+from dataclasses import dataclass
+from enum import Enum
+from typing import List, Dict
+from datetime import datetime
+
+def clamp(v, mn, mx): return max(mn, min(v, mx))
+
+# === Енуми ===
+class ProgressLevel(Enum):
+    NEURAL = "нервовий"          # 0-3 міс: техніка, координація
+    STRUCTURAL = "структурний"   # 3-9 міс: сухожилля, фасції
+    MUSCULAR = "м'язовий"        # 9-18 міс: гіпертрофія, інтенсивність
+    SPECIALIZATION = "спеціалізація"  # фарма/змагання
+
+class ExerciseStyle(Enum):
+    LIFTING = "ліфтинг"
+    ATHLETISM = "атлетизм"
+    BODYBUILDING = "ізоляція"
+
+class IntensityTool(Enum):
+    DROP_SET = "дроп-сет"
+    REST_PAUSE = "рест-пауз"
+    MECH_DROP = "механічний дроп"
+    TEMPO_EXTEND = "темпо"
+    PARTIALS = "паршіали"
+
+class ProgressionStep(Enum):
+    REPS = "збільшуй повтори"
+    WEIGHT = "збільшуй вагу"
+    SETS = "додай підхід (атлетизм)"
+    INTENSITY = "додай інтенсивність"
+    EXERCISE = "заміни/додай вправу"
+
+# === Профіль ===
+@dataclass
+class UserProfile:
+    age: int
+    training_months: int
+    sleep_hours_avg: float
+    hrv_stable: bool
+    doms_hours: int
+    weight_growth_3m_percent: float
+    has_time: bool
+    wants_split_early: bool = False
+    on_pharma: bool = False
+    technical_regression: bool = False
+
+    def current_level(self) -> ProgressLevel:
+        if self.training_months < 3: return ProgressLevel.NEURAL
+        if self.training_months < 9: return ProgressLevel.STRUCTURAL
+        if self.training_months < 18 or not self.on_pharma: return ProgressLevel.MUSCULAR
+        return ProgressLevel.SPECIALIZATION
+
+# === Ядро системи ===
+class AntiFitnessCore:
+    def __init__(self, user: UserProfile):
+        self.user = user
+
+    def recovery_index(self) -> float:
+        sleep = clamp(self.user.sleep_hours_avg / 7.0 * 100, 0, 100)
+        hrv = 100 if self.user.hrv_stable else 60
+        doms = clamp(100 - (self.user.doms_hours - 48), 0, 100)
+        return clamp((sleep * 0.4 + hrv * 0.3 + doms * 0.3), 0, 100)
+
+    def can_use_split(self) -> Dict:
+        conditions_met = (
+            self.user.weight_growth_3m_percent >= 8 and
+            self.user.sleep_hours_avg >= 7 and
+            self.user.hrv_stable and
+            self.user.doms_hours < 72 and
+            not self.user.technical_regression and
+            self.user.has_time
+        )
+        if conditions_met:
+            return {"allowed": True, "reason": "Всі метрики в нормі — перехід безпечний"}
+        if self.user.wants_split_early:
+            return {"allowed": True, "reason": "За бажанням клієнта (з попередженням про ризики суглобів/відновлення)", "warning": True}
+        return {"allowed": False, "reason": "Не всі умови виконані — залишаємось на full body"}
+
+    def failure_rules(self) -> Dict[ExerciseStyle, Dict]:
+        level = self.user.current_level()
+        return {
+            ExerciseStyle.LIFTING: {
+                "allowed": level != ProgressLevel.NEURAL,
+                "exception": level == ProgressLevel.NEURAL and {"frequency": "1 раз/4-6 тижнів", "conditions": ["1 сет", "повна страховка"]},
+                "normal": {"frequency_per_month": 1 if level == ProgressLevel.STRUCTURAL else 2}
+            },
+            ExerciseStyle.ATHLETISM: {
+                "allowed": True,
+                "tools": ["assisted reps", "rest-pause", "mechanical drop"],
+                "warning": "НІ повної відмови до падіння — безпека суглобів"
+            },
+            ExerciseStyle.BODYBUILDING: {
+                "allowed": True,
+                "mandatory_failure_last_set": level != ProgressLevel.NEURAL
+            }
+        }
+
+    def current_progression_step(self) -> ProgressionStep:
+        growth = self.user.weight_growth_3m_percent
+        if growth < 5: return ProgressionStep.REPS
+        if growth < 10: return ProgressionStep.WEIGHT
+        if growth < 15: return ProgressionLevel.SETS
+        if growth < 20: return ProgressionStep.INTENSITY
+        return ProgressionStep.EXERCISE
+
+    def allowed_intensity_tools(self) -> List[IntensityTool]:
+        if self.user.current_level() == ProgressLevel.NEURAL: return []
+        if self.current_progression_step() != ProgressionStep.INTENSITY: return []
+        return list(IntensityTool)
+
+    def system_status(self) -> Dict:
+        return {
+            "current_level": self.user.current_level().value,
+            "recovery_index": self.recovery_index(),
+            "split_allowed": self.can_use_split(),
+            "failure_rules": self.failure_rules(),
+            "progression_step": self.current_progression_step().value,
+            "intensity_tools": [t.value for t in self.allowed_intensity_tools()],
+            "biohacks": [
+                "Мітохондрії: PQQ/CoQ10 + MIIT кардіо (відновлення/антиейджинг)",
+                "ССС: таурин + контроль тиску",
+                "Тестостерон: сон + ZMA + аналізи (уролог)",
+                "Вуглеводний обмін: хром + циклічні вуглеводи (нутри)"
+            ],
+            "next_steps": "Стабільний ріст → перехід на 3 тренування → спліт тільки при повній готовності"
+        }
+
+# Тест
+if __name__ == "__main__":
+    user = UserProfile(
+        age=27, training_months=7, sleep_hours_avg=7.8, hrv_stable=True,
+        doms_hours=48, weight_growth_3m_percent=11.0, has_time=True,
+        wants_split_early=False, technical_regression=False
+    )
+    core = AntiFitnessCore(user)
+    status = core.system_status()
+    import json
+    print(json.dumps(status, ensure_ascii=False, indent=2))
