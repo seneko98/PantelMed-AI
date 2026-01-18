@@ -1,0 +1,281 @@
+import math
+from enum import Enum
+from typing import List, Dict, Optional
+from dataclasses import dataclass
+
+# ==============================================================================
+# 1. DATABASE LAYER & CONSTANTS (База знань)
+# ==============================================================================
+
+class DrugType(Enum):
+    ORAL = "oral"
+    INJECTABLE = "injectable"
+    SARM = "sarm"
+    SUPPORT = "support"
+
+@dataclass
+class DrugProfile:
+    name: str
+    gold_dose: float
+    # scores: [Neuro, Metab, Recov, Safety]
+    scores: List[float] 
+    half_life: float
+    type: DrugType
+
+# База препаратів (Скорочена версія з твого файлу)
+DRUG_DATABASE = {
+    "test_e": DrugProfile("Testosterone Enanthate", 500, [6, 5, 8, 9], 5.0, DrugType.INJECTABLE),
+    "tren_a": DrugProfile("Trenbolone Acetate", 300, [10, 9, 6, 4], 1.0, DrugType.INJECTABLE),
+    "masteron": DrugProfile("Masteron", 400, [7, 6, 6, 8], 3.0, DrugType.INJECTABLE),
+    "stanozolol": DrugProfile("Stanozolol", 30, [7, 7, 5, 2], 0.8, DrugType.ORAL), # Low Safety!
+    "oxandrolone": DrugProfile("Oxandrolone", 40, [5, 6, 5, 5], 0.4, DrugType.ORAL)
+}
+
+# ==============================================================================
+# 2. DATA MODELS (Структури даних / Паспорт)
+# ==============================================================================
+
+@dataclass
+class HormonalContext:
+    """Вихідні дані від Уролога для інших агентів"""
+    is_on_cycle: bool
+    asg_score: Dict[str, float] # {neuro, metab, recov, safety}
+    joint_warning: bool         # True, якщо є сухі препи (Стан)
+    blood_viscosity_alert: bool # True, якщо є Болденон або високий гематокрит
+
+@dataclass
+class AthletePassport:
+    weight: float
+    height: float
+    age_chronological: int
+    age_biological: int
+    mq_level: float         # 0.0 - 3.0 (Muscle IQ)
+    weak_points: List[str]  # ["Chest", "Triceps"]
+    injuries: List[str]     # ["Left_Elbow"]
+    job_type: str           # "Active", "Office"
+    avg_steps: int
+    
+# ==============================================================================
+# 3. UROLOGY ENGINE (Гормональне Ядро)
+# ==============================================================================
+
+class UrologyEngine:
+    def __init__(self, current_stack: List[Dict]):
+        # stack example: [{'name': 'test_e', 'dose': 500, 'week': 4}]
+        self.stack = current_stack
+
+    def analyze_status(self) -> HormonalContext:
+        if not self.stack:
+            return HormonalContext(False, {"neuro": 1, "metab": 1, "recov": 1, "safety": 10}, False, False)
+
+        asg_total = {"neuro": 0.0, "metab": 0.0, "recov": 0.0, "safety": 10.0}
+        joint_risk_counter = 0
+        
+        for item in self.stack:
+            drug = DRUG_DATABASE.get(item['name'])
+            if not drug: continue
+            
+            # 1. ESC (Ester Saturation Coefficient) - спрощено
+            esc = 1.0 if drug.type == DrugType.ORAL else min(1.0, 0.25 * item['week'])
+            
+            # 2. Dose Factor
+            k_dose = item['dose'] / drug.gold_dose
+            
+            # 3. Summing Scores
+            asg_total["neuro"] += drug.scores["neuro"] * k_dose * esc
+            asg_total["metab"] += drug.scores["metab"] * k_dose * esc
+            asg_total["recov"] += drug.scores["recov"] * k_dose * esc
+            
+            # Safety працює на віднімання
+            safety_penalty = (10 - drug.scores["safety"]) * k_dose * esc
+            asg_total["safety"] -= safety_penalty
+
+            # Specific Flags
+            if drug.name == "Stanozolol" or drug.name == "Masteron":
+                joint_risk_counter += 1
+
+        # Нормалізація Safety (не нижче 0)
+        asg_total["safety"] = max(0.0, asg_total["safety"])
+        
+        return HormonalContext(
+            is_on_cycle=True,
+            asg_score=asg_total,
+            joint_warning=(joint_risk_counter > 0 or asg_total["safety"] < 5),
+            blood_viscosity_alert=False # Тут можна додати логіку для Болденона
+        )
+
+# ==============================================================================
+# 4. KT CALCULATOR (Тривимірний тест)
+# ==============================================================================
+
+class KTCalculator:
+    def __init__(self, passport: AthletePassport):
+        self.p = passport
+
+    def calculate_hybrid_kt(self, performance: Dict) -> float:
+        """
+        performance = {
+            'bench_1rm': 120, 'squat_1rm': 160, 'deadlift_1rm': 200,
+            'lunges_dumbbell': 32, 'strict_curl': 50,
+            'pullups': 25, 'dips': 40,
+            'recovery_speed': 'High'
+        }
+        """
+        # 1. Силовий Вектор (Relative Strength)
+        bw = self.p.weight
+        k_str = (
+            (performance['bench_1rm'] / bw / 1.3) + 
+            (performance['squat_1rm'] / bw / 1.6) + 
+            (performance['deadlift_1rm'] / bw / 2.0)
+        ) / 3
+        k_str = min(1.0, k_str)
+
+        # 2. Атлетичний Вектор
+        # Випади 40кг = 1.0. Строгий підйом 50кг = 1.0 (для ваги ~85-90)
+        k_athl = (
+            (performance['lunges_dumbbell'] / 40.0) + 
+            (performance['strict_curl'] / 50.0)
+        ) / 2
+        
+        # 3. Гімнастика (Bodyweight)
+        k_cali = (
+            (performance['pullups'] / 25.0) + 
+            (performance['dips'] / 40.0)
+        ) / 2
+
+        # 4. Двигун (Відновлення)
+        rec_map = {"Low": 0.4, "Medium": 0.7, "High": 1.0, "Elite": 1.2}
+        k_engine = rec_map.get(performance['recovery_speed'], 0.5)
+
+        # Фінальна формула (Зважена)
+        # Сила 30%, Атлетизм 25%, Гімнастика 15%, Двигун 30%
+        final_kt = (k_str * 0.30) + (k_athl * 0.25) + (k_cali * 0.15) + (k_engine * 0.30)
+        
+        return round(final_kt, 2)
+
+# ==============================================================================
+# 5. FITNESS AGENT (Anti-Lie & Logic)
+# ==============================================================================
+
+class FitnessAgent:
+    def __init__(self, passport: AthletePassport, kt_level: float):
+        self.passport = passport
+        self.kt = kt_level
+
+    def generate_session_params(self, day: str, h_context: HormonalContext, sleep_score: int):
+        print(f"\n--- АНАЛІЗ ФІТНЕС-АГЕНТА ({day}) ---")
+        
+        # 1. Розрахунок RR (Real Readiness)
+        # База = Сон + КТ
+        rr_base = (sleep_score / 10.0) * 0.5 + (self.kt * 0.5)
+        
+        # Бонус від фарми (Global Recovery)
+        # Якщо ASG Recov = 8 (високий), даємо бонус +30% до RR
+        pharma_bonus = h_context.asg_score["recov"] * 0.04
+        
+        # Штраф за кроки (Habituation)
+        steps_tax = 0.0
+        if self.passport.job_type == "Active" and self.passport.avg_steps > 15000:
+            steps_tax = 0.1 # -10% ресурсу
+        
+        final_rr = rr_base + pharma_bonus - steps_tax
+        print(f"📊 RR (Бензобак): {final_rr:.2f} (База: {rr_base:.2f} + Фарма: {pharma_bonus:.2f})")
+
+        # 2. Визначення пріоритетів (Monday Logic)
+        focus_group = "Planned Split"
+        if day == "Monday" and self.passport.weak_points:
+            focus_group = f"WEAK POINT PRIORITY: {self.passport.weak_points[0].upper()}"
+            print(f"⚠️ Виявлено 'Понеділок'. Активуємо протокол слабкої ланки: {focus_group}")
+
+        # 3. Joint Safety Filter (Станозолол / Травми)
+        safety_mode = "Normal"
+        restrictions = []
+        
+        if h_context.joint_warning:
+            safety_mode = "JOINT PROTECTION ACTIVE"
+            restrictions.append("No explosive movements")
+            restrictions.append("No heavy low-rep sets (<6 reps)")
+            restrictions.append("Extended Warmup (+15 min)")
+            
+            # Специфічний бан для хворих місць
+            if "Left_Elbow" in self.passport.injuries:
+                restrictions.append("BAN: French Press, Heavy Bench Lockouts")
+        
+        # 4. Розрахунок RPE (Інтенсивності) на основі Neuro Drive
+        neuro = h_context.asg_score["neuro"]
+        if neuro > 7 and final_rr > 0.7:
+            rpe = "9-10 (Failure allowed, Drop-sets allowed)"
+        elif neuro > 4:
+            rpe = "7-8 (2 reps in reserve)"
+        else:
+            rpe = "5-6 (Deload / Pump mode)"
+
+        # 5. Volume (Sets) - MQ Scaling
+        # База для КТ 0.8 = 16 сетів. MQ множник.
+        base_volume = 12 + (self.kt * 5) # 12 + 4 = 16
+        if self.passport.mq_level >= 2.0: # High MQ
+            # Профі робить менше сміттєвого об'єму, але якісніше
+            final_sets = int(base_volume * 1.0) 
+        else:
+            # Новачок бере кількістю
+            final_sets = int(base_volume * 1.2)
+            
+        # Корекція на ASG
+        if h_context.asg_score["recov"] > 5:
+            final_sets += 4 # Фарма дозволяє більше
+
+        return {
+            "Day": day,
+            "Focus": focus_group,
+            "Readiness_RR": f"{final_rr*100:.0f}%",
+            "Safety_Mode": safety_mode,
+            "Restrictions": restrictions,
+            "Target_RPE": rpe,
+            "Working_Sets_Total": final_sets,
+            "Neuro_Drive_Status": f"{neuro:.1f}/10"
+        }
+
+# ==============================================================================
+# 6. SIMULATION (Тестовий запуск)
+# ==============================================================================
+
+# 1. Створюємо паспорт (Гібрид, як ти)
+user_passport = AthletePassport(
+    weight=88.0, height=178.0, 
+    age_chronological=34, age_biological=28,
+    mq_level=2.5, # High MQ (Expert)
+    weak_points=["Upper_Chest"],
+    injuries=["Left_Elbow"],
+    job_type="Active", avg_steps=12000
+)
+
+# 2. Проганяємо "Потрійний тест"
+kt_calc = KTCalculator(user_passport)
+user_performance = {
+    'bench_1rm': 140, 'squat_1rm': 180, 'deadlift_1rm': 220, # Сила
+    'lunges_dumbbell': 40, 'strict_curl': 55,               # Атлетизм
+    'pullups': 28, 'dips': 50,                              # Гімнастика
+    'recovery_speed': 'Elite'                               # Двигун
+}
+user_kt = kt_calc.calculate_hybrid_kt(user_performance)
+print(f"🧬 CALCULATED KT LEVEL: {user_kt} (Expert Level)")
+
+# 3. Запускаємо Уролога (Стек: Тест + Стан + Трен)
+# Тиждень 3 - пік оралок, розгін ефірів
+current_stack = [
+    {'name': 'test_e', 'dose': 500, 'week': 3},
+    {'name': 'tren_a', 'dose': 200, 'week': 3},
+    {'name': 'stanozolol', 'dose': 30, 'week': 3} 
+]
+urologist = UrologyEngine(current_stack)
+hormonal_ctx = urologist.analyze_status()
+print(f"💊 PHARMA STATUS: ASG={hormonal_ctx.asg_score}, Joint_Warn={hormonal_ctx.joint_warning}")
+
+# 4. Фітнес Агент генерує тренування на Понеділок
+agent = FitnessAgent(user_passport, user_kt)
+# Симуляція: Понеділок, сон був середній (7/10)
+session = agent.generate_session_params("Monday", hormonal_ctx, sleep_score=7)
+
+print("\n--- FINAL TRAINING PROTOCOL ---")
+for k, v in session.items():
+    print(f"{k}: {v}")
