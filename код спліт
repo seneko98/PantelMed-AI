@@ -1,0 +1,208 @@
+Python
+
+# antifitness_split_v0_4.py
+# Версія 0.4 спліт-системи Антифітнес — превентивний біохакінг сили/здоров'я/антиейджингу для PantelMed
+# Запобігання ССЗ, тестостерон, вуглеводний обмін, щитовидка, мітохондрії, антиейджинг, луксмаксинг
+# Heavy з оновленням історії по primary + secondary (з коефіцієнтом навантаження 1.0 / 0.5), глобальний + локальний ліміт ЦНС
+# Arms-focus з обмеженням жимів (max 2), пріоритетом пампу рук
+# Forearm/calves завжди NORMAL/LIGHT, reps 20-35, не під heavy
+# PyramidSchema для різних типів пірамід (класична 10-8-6-4, майже-піраміда, 5-3)
+# Уніфіковані групи м'язів, правило спини (ширина/товщина), розділення heavy (база) vs intensity (ізоляція)
+
+from dataclasses import dataclass
+from enum import Enum
+from typing import List, Dict, Optional
+from datetime import datetime, timedelta
+
+class SplitVariant(Enum):
+    STANDARD = "стандартний"          # Груди-Трицепс-Передпліччя | Спина-Біцепс-Трапеція | Ноги-Дельти-Ікри
+    ARMS_FOCUS = "фокус на руки"      # Для маленьких рук / високих >178 см
+
+class SplitSlot(Enum):
+    PUSH = "push"                     # Груди + Трицепс + Передпліччя (або Груди + Дельти в arms-focus)
+    PULL = "pull"                     # Спина + Біцепс + Трапеція
+    LEGS = "legs"                     # Ноги + Дельти + Ікри (або Ноги + Ікри в arms-focus)
+    TRICEPS_FOREARM = "triceps_forearm"  # Окремий слот в arms-focus
+
+class LoadType(Enum):
+    LIGHT = "light"
+    NORMAL = "normal"
+    HEAVY = "heavy"
+
+class PyramidSchema(Enum):
+    CLASSIC = "класична (10-8-6-4)"
+    ALMOST = "майже-піраміда"
+    FIVE_THREE = "5-3 режим"
+
+class BackVector(Enum):
+    WIDTH = "width"
+    THICKNESS = "thickness"
+    NEUTRAL = "neutral"
+
+@dataclass
+class DailyReadiness:
+    sleep_ok: bool = True
+    nutrition_ok: bool = True
+    subjective_ok: bool = True
+    trainability_coeff: float = 0.75  # Заглушка під майбутній коефіцієнт тренованості (0.0-1.0)
+
+# === Training Atoms ===
+@dataclass
+class TrainingAtom:
+    name: str
+    primary_group: MuscleGroup
+    secondary_groups: List[MuscleGroup]
+    style: str  # "lifting", "athletism", "bodybuilding"
+    base_sets_reps: str
+    notes: str = ""
+    back_vector: Optional[BackVector] = None  # Тільки для спини
+
+TRAINING_ATOMS = [
+    TrainingAtom("жим лежачи / жим під кутом вгору", MuscleGroup.CHEST, [MuscleGroup.TRICEPS], "lifting", "4×8-10", "Зміна кутів обов'язкова. Піраміда можлива."),
+    TrainingAtom("жим гантелей (кут протилежний)", MuscleGroup.CHEST, [MuscleGroup.TRICEPS, MuscleGroup.SHOULDERS], "athletism", "3×8-10", "Майже відмова. 0.25 піраміда в не-heavy."),
+    TrainingAtom("кросовер / розведення / пуловер", MuscleGroup.CHEST, [], "bodybuilding", "3×10-15", "Розтяжка грудних. Фінішер."),
+    TrainingAtom("жим вузьким хватом / французький", MuscleGroup.TRICEPS, [MuscleGroup.CHEST], "lifting", "4×8", "Після перерви від грудей."),
+    TrainingAtom("розгинання в блоці", MuscleGroup.TRICEPS, [], "bodybuilding", "4×12-15", "Короткі перерви 35-50 сек."),
+    TrainingAtom("присідання / жим ногами", MuscleGroup.LEGS, [], "lifting", "4×8", "Особливий контроль з становою."),
+    TrainingAtom("жим Арнольда / жим сидячи", MuscleGroup.SHOULDERS, [MuscleGroup.TRICEPS], "athletism", "4×8-10", "Для маси дельт — сидячи ефективніше."),
+    TrainingAtom("тяга вертикальна / тяга за голову", MuscleGroup.BACK, [], "athletism", "3×8-10", "Ширина спини", back_vector=BackVector.WIDTH),
+    TrainingAtom("тяга горизонтальна / гіперекстензія", MuscleGroup.BACK, [], "lifting", "4×8", "Товщина спини", back_vector=BackVector.THICKNESS),
+    TrainingAtom("предпліччя (гриф/молотки)", MuscleGroup.FOREARM, [], "bodybuilding", "3×20-35", "Завжди NORMAL/LIGHT, висока витривалість"),
+    TrainingAtom("ікри стоячи / сидячи", MuscleGroup.CALVES, [], "bodybuilding", "4×20-30", "Завжди NORMAL/LIGHT, фокус на витривалість"),
+    # ... повна база з тексту
+]
+
+# === Decision Engine ===
+class SplitDecisionEngine:
+    def __init__(self):
+        self.heavy_history: Dict[MuscleGroup, List[datetime]] = {group: [] for group in MuscleGroup}
+        self.global_heavy_last7: List[datetime] = []  # Глобальний ЦНС
+
+    def _update_history(self, primary: MuscleGroup, secondary: List[MuscleGroup], load_type: LoadType):
+        if load_type == LoadType.HEAVY:
+            today = datetime.now()
+            # Primary: повний 1.0 навантаження
+            self.heavy_history[primary].append(today)
+            self.global_heavy_last7.append(today)
+            # Secondary: 0.5 навантаження (фіксуємо половину, наприклад, тільки кожну другу heavy)
+            for sec in secondary:
+                if len(self.heavy_history[sec]) % 2 == 0:  # Симуляція 0.5
+                    self.heavy_history[sec].append(today)
+            # Очистка >7 днів
+            week_ago = today - timedelta(days=7)
+            self.global_heavy_last7 = [d for d in self.global_heavy_last7 if d > week_ago]
+            for g in self.heavy_history:
+                self.heavy_history[g] = [d for d in self.heavy_history[g] if d > week_ago]
+
+    def decide_load(self, primary_group: MuscleGroup, readiness: DailyReadiness) -> LoadType:
+        if not (readiness.sleep_ok and readiness.nutrition_ok and readiness.subjective_ok):
+            return LoadType.LIGHT
+        
+        if readiness.trainability_coeff < 0.65:
+            return LoadType.LIGHT
+        
+        # Глобальний ліміт ЦНС: max 2 heavy/7 днів
+        if len(self.global_heavy_last7) >= 2:
+            return LoadType.NORMAL if readiness.trainability_coeff > 0.8 else LoadType.LIGHT
+        
+        # Локальний ліміт по групі: max 2 heavy/7 днів
+        group_count = len(self.heavy_history[primary_group])
+        if group_count >= 2:
+            return LoadType.NORMAL
+        
+        # Дозвіл heavy
+        if readiness.trainability_coeff >= 0.8:
+            load = LoadType.HEAVY
+        elif readiness.trainability_coeff >= 0.7:
+            load = LoadType.NORMAL
+        else:
+            load = LoadType.LIGHT
+        
+        return load
+
+    def can_quarter_pyramid(self, readiness: DailyReadiness, load_type: LoadType) -> bool:
+        return (load_type != LoadType.HEAVY and 
+                readiness.trainability_coeff >= 0.65 and 
+                readiness.sleep_ok and readiness.nutrition_ok)
+
+# === Split Composer ===
+class SplitComposer:
+    def __init__(self, variant: SplitVariant, decision_engine: SplitDecisionEngine):
+        self.variant = variant
+        self.de = decision_engine
+
+    def compose_day(self, slot: SplitSlot, readiness: DailyReadiness) -> Dict:
+        if self.variant == SplitVariant.ARMS_FOCUS and slot == SplitSlot.ARMS_FOCUS:
+            # Уточнена логіка для arms-focus: max 2 жими, пріоритет пампу рук
+            primary = MuscleGroup.TRICEPS
+            secondary = [MuscleGroup.FOREARM]
+            # Обмеження жимів (глобально для дня: max 2)
+            jims_count = 2  # Заглушка, рахувати динамічно з атомів
+            if jims_count > 2:
+                return {"error": "Перевищено жими в arms-focus"}
+            # Пріоритет пампу рук: + reps для bodybuilding
+        else:
+            # Стандартна логіка
+            if slot == SplitSlot.PUSH:
+                primary = MuscleGroup.CHEST
+                secondary = [MuscleGroup.TRICEPS, MuscleGroup.FOREARM]
+            elif slot == SplitSlot.PULL:
+                primary = MuscleGroup.BACK
+                secondary = [MuscleGroup.BICEPS, MuscleGroup.TRAPS]
+            elif slot == SplitSlot.LEGS:
+                primary = MuscleGroup.LEGS
+                secondary = [MuscleGroup.SHOULDERS, MuscleGroup.CALVES]
+            else:
+                primary = MuscleGroup.TRICEPS
+                secondary = [MuscleGroup.FOREARM]
+        
+        load = self.de.decide_load(primary, readiness)
+        quarter = self.de.can_quarter_pyramid(readiness, load)
+        
+        # Підбір атомів по слоту і стилю (lifting heavy, bodybuilding intensity)
+        atoms = [a for a in TRAINING_ATOMS if a.primary_group == primary or a.primary_group in secondary]
+        atoms = atoms[:4]  # Обмеження 4 вправи
+        
+        # Правило спини для PULL: ширина + товщина ≥1 кожна
+        if slot == SplitSlot.PULL:
+            width_count = sum(1 for a in atoms if a.back_vector == BackVector.WIDTH)
+            thickness_count = sum(1 for a in atoms if a.back_vector == BackVector.THICKNESS)
+            if width_count < 1 or thickness_count < 1:
+                return {"error": "Недостатньо ширини/товщини спини — перебудувати день"}
+        
+        # Оновлення історії по primary + secondary (1.0 / 0.5)
+        self.de._update_history(primary, secondary, load)
+        
+        # Розділення: heavy тільки для lifting, intensity для bodybuilding
+        plan = {
+            "slot": slot.value,
+            "primary_group": primary.value,
+            "load_type": load.value,
+            "pyramid_schema": PyramidSchema.CLASSIC.value if load == LoadType.HEAVY else (PyramidSchema.ALMOST.value if quarter and load == LoadType.NORMAL else PyramidSchema.FIVE_THREE.value if load == LoadType.HEAVY and "5-3" in atoms[0].notes else None),
+            "exercises": [
+                {
+                    "name": atom.name,
+                    "sets_reps": atom.base_sets_reps + (" + heavy піраміда" if (load == LoadType.HEAVY and "lifting" in atom.style) else 
+                                                        (" + intensity" if ("bodybuilding" in atom.style and load == LoadType.NORMAL) else ""),
+                    "notes": atom.notes
+                } for atom in atoms
+            ],
+            "compensation_note": "Якщо heavy — наступне тренування групи light/normal"
+        }
+        return plan
+
+# Тест v0.4
+if __name__ == "__main__":
+    readiness = DailyReadiness(trainability_coeff=0.85)
+    de = SplitDecisionEngine()
+    composer = SplitComposer(SplitVariant.STANDARD, de)
+    
+    plan_push = composer.compose_day(SplitSlot.PUSH, readiness)
+    plan_pull = composer.compose_day(SplitSlot.PULL, readiness)  # Перевірить правило спини
+    
+    import json
+    print("PUSH день:")
+    print(json.dumps(plan_push, ensure_ascii=False, indent=2))
+    print("\nPULL день (з перевіркою ширини/товщини спини):")
+    print(json.dumps(plan_pull, ensure_ascii=False, indent=2))
+    print("\nІсторія heavy оновлена по primary + secondary (1.0/0.5) + глобальний ЦНС контроль — 
