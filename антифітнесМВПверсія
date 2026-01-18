@@ -1,0 +1,633 @@
+Перший файл / один з каменів фундаменту 
+# antifitness_agent_full.py
+# Повна інтегрована версія Антифітнес-Агента для PantelMed
+# Об'єднано всі модулі з наданих файлів: гормони, KTCalculator, UrologyEngine, AntiFitnessAgent, SplitSystem, Full Body, фарма, прогресія, анти-брехня тощо
+# Превентивна система: сила + здоров'я + антиейджинг без хаосу
+# Запобігання ССЗ, тестостерон, вуглеводний обмін, щитовидка, мітохондрії, луксмаксинг
+
+import math
+from enum import Enum
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Union, Tuple
+from datetime import datetime, timedelta
+
+# ==============================================================================
+# 1. КОНФІГУРАЦІЯ ТА БАЗА ЗНАНЬ (CONSTANTS & ENUMS)
+# ==============================================================================
+
+class Rank(Enum):
+    LOW = "LOW"       # 0-6 міс
+    MID = "MID"       # 6-24 міс
+    HIGH = "HIGH"     # 18+ міс
+    ELITE = "Elite (Профі/Фарма)"
+
+class DrugType(Enum):
+    ORAL = "oral"
+    INJECTABLE = "injectable"
+    SARM = "sarm"
+    SUPPORT = "support"
+
+@dataclass
+class DrugProfile:
+    name: str
+    gold_dose: float
+    scores: List[float]  # [Neuro, Metab, Recov, Safety]
+    half_life: float
+    type: DrugType
+
+DRUG_DATABASE = {
+    # Оральні (mg/day)
+    "oxandrolone": DrugProfile("Oxandrolone", 30, [5, 6, 5, 5], 0.4, DrugType.ORAL),
+    "turinabol": DrugProfile("Turinabol", 40, [7, 6, 6, 7], 0.6, DrugType.ORAL),
+    "stanozolol": DrugProfile("Stanozolol", 30, [7, 7, 5, 2], 0.4, DrugType.ORAL),  # Safety 2!
+    "methandienone": DrugProfile("Methandienone", 30, [5, 6, 7, 9], 0.2, DrugType.ORAL),
+    "oxymetholone": DrugProfile("Oxymetholone", 50, [4, 5, 7, 3], 0.3, DrugType.ORAL),
+    # Ін'єкційні (mg/week)
+    "test_e": DrugProfile("Test Enanthate", 500, [6, 5, 8, 9], 5.0, DrugType.INJECTABLE),
+    "test_c": DrugProfile("Test Cypionate", 500, [6, 5, 8, 9], 6.0, DrugType.INJECTABLE),
+    "test_prop": DrugProfile("Test Propionate", 300, [6, 5, 7, 9], 1.0, DrugType.INJECTABLE),
+    "tren_a": DrugProfile("Tren Acetate", 300, [10, 9, 6, 4], 1.0, DrugType.INJECTABLE),
+    "tren_e": DrugProfile("Tren Enanthate", 400, [10, 9, 6, 4], 5.0, DrugType.INJECTABLE),
+    "deca": DrugProfile("Deca", 400, [4, 5, 9, 6], 6.0, DrugType.INJECTABLE),
+    "bold": DrugProfile("Bold", 600, [5, 6, 8, 7], 5.0, DrugType.INJECTABLE),
+    "masteron": DrugProfile("Masteron", 400, [7, 6, 6, 8], 3.0, DrugType.INJECTABLE),
+    "primobolan": DrugProfile("Primobolan", 500, [5, 5, 7, 9], 4.0, DrugType.INJECTABLE),
+    "winstrol_inj": DrugProfile("Winstrol Inj", 150, [7, 7, 5, 2], 1.0, DrugType.INJECTABLE),
+    # SARMs (mg/day)
+    "ostarine": DrugProfile("Ostarine", 20, [4, 4, 6, 8], 1.0, DrugType.SARM),
+    "ligandrol": DrugProfile("Ligandrol", 10, [5, 5, 7, 7], 1.0, DrugType.SARM),
+    "rad140": DrugProfile("RAD140", 15, [6, 6, 5, 6], 1.0, DrugType.SARM),
+    # Підтримка (mg/day)
+    "cabergoline": DrugProfile("Cabergoline", 0.25, [8, 2, 5, 8], 2.0, DrugType.SUPPORT),
+    "anastrozole": DrugProfile("Anastrozole", 0.5, [7, 3, 4, 7], 2.0, DrugType.SUPPORT),
+    "tamoxifen": DrugProfile("Tamoxifen", 20, [3, 2, 6, 7], 1.5, DrugType.SUPPORT),
+    "clomid": DrugProfile("Clomid", 50, [4, 3, 7, 6], 1.5, DrugType.SUPPORT),
+    "hcg": DrugProfile("HCG", 500, [5, 4, 8, 9], 0.5, DrugType.SUPPORT),
+}
+
+class ExerciseStyle(Enum):
+    LIFTING = "ліфтинг"         # База: жим лежачи, присід, станова
+    ATHLETISM = "атлетизм"      # Вільна вага: жими гантелей, тяги, махи
+    BODYBUILDING = "ізоляція"   # Тренажери, блоки, памп
+    REHAB = "реабілітація"      # ЛФК для відновлення
+
+@dataclass
+class TrainingAtom:
+    name: str
+    group: str
+    style: ExerciseStyle
+    base_sets: int
+    base_reps: Tuple[int, int]
+    rest_sec: int
+
+EXERCISES_DB = [
+    TrainingAtom("жим лежачи / жим під кутом вгору", "груди", ExerciseStyle.LIFTING, 3, (8,10), 120),
+    TrainingAtom("розведення / кросовер / пуловер", "груди", ExerciseStyle.BODYBUILDING, 3, (10,15), 45),
+    TrainingAtom("французький жим / вузький хват", "трицепс", ExerciseStyle.LIFTING, 4, (6,8), 90),
+    TrainingAtom("розгинання в блоці (памп)", "трицепс", ExerciseStyle.BODYBUILDING, 4, (12,15), 35),
+    TrainingAtom("присідання з штангою", "ноги", ExerciseStyle.LIFTING, 3, (8,8), 150),
+    TrainingAtom("розгинання / згинання ніг", "ноги", ExerciseStyle.ATHLETISM, 3, (10,12), 90),
+    TrainingAtom("жим Арнольда / жим гантелей сидячи", "дельти", ExerciseStyle.ATHLETISM, 4, (8,10), 90),
+    TrainingAtom("махи в сторони / перед собою", "дельти", ExerciseStyle.BODYBUILDING, 3, (12,15), 45),
+    TrainingAtom("тяга вертикальна / за голову", "спина", ExerciseStyle.ATHLETISM, 3, (8,10), 90),
+    TrainingAtom("тяга горизонтальна / гіперекстензія", "спина", ExerciseStyle.LIFTING, 4, (8,10), 120),
+    # ... (повна база з документів, додайте інші вправи аналогічно)
+    TrainingAtom("прес 3/25-45", "прес", ExerciseStyle.BODYBUILDING, 3, (25,45), 30),
+    TrainingAtom("кардіо 5-10 хв", "кардіо", ExerciseStyle.ATHLETISM, 1, (5,10), 0),
+]
+
+class SplitVariant(Enum):
+    STANDARD = "стандартний"
+    ARMS_FOCUS = "фокус на руки"
+
+class SplitSlot(Enum):
+    PUSH = "push"
+    PULL = "pull"
+    LEGS = "legs"
+    TRICEPS_FOREARM = "triceps_forearm"
+
+class LoadType(Enum):
+    LIGHT = "light"
+    NORMAL = "normal"
+    HEAVY = "heavy"
+
+class PyramidType(Enum):
+    FULL = "повна піраміда"
+    QUARTER = "0.25 піраміда"
+
+class PyramidSchema(Enum):
+    CLASSIC = "класична (10-8-6-4)"
+    ALMOST = "майже-піраміда"
+    FIVE_THREE = "5-3 режим"
+
+class MuscleGroup(Enum):
+    CHEST = "chest"
+    TRICEPS = "triceps"
+    FOREARM = "forearm"
+    BACK = "back"
+    BICEPS = "biceps"
+    TRAPS = "traps"
+    LEGS = "legs"
+    SHOULDERS = "shoulders"
+    CALVES = "calves"
+
+class BackVector(Enum):
+    WIDTH = "width"
+    THICKNESS = "thickness"
+    NEUTRAL = "neutral"
+
+@dataclass
+class DailyReadiness:
+    sleep_ok: bool = True
+    nutrition_ok: bool = True
+    subjective_ok: bool = True
+    trainability_coeff: float = 0.75
+
+@dataclass
+class BodyType:
+    ecto_weight: float = 0.0
+    meso_weight: float = 0.0
+    endo_weight: float = 0.0
+
+    def __post_init__(self):
+        total = self.ecto_weight + self.meso_weight + self.endo_weight
+        if abs(total - 1.0) > 0.01:
+            raise ValueError("Сума ваг типажів = 1.0")
+
+@dataclass
+class UserProfile:
+    age: int
+    training_months: int
+    goals: List[str]
+    body_type: BodyType
+    gender: str = "male"
+    sleep_hours_avg: float = 7.5
+    hrv: float = 80.0
+    fatigue: int = 5
+    nutrition_compliance: float = 0.8
+    hormone_balance: float = 0.8
+    on_pharma: bool = False
+    has_time_for_3: bool = True
+    sport_background: bool = False
+    heavy_history: List[Dict] = field(default_factory=list)
+    progress_trend: str = "стабільний"
+    weight_kg: float = 80.0
+    height_cm: float = 180.0
+    body_fat_percent: float = 15.0
+    wrist_cm: float = 18.0
+    ankle_cm: float = 22.0
+    chest_cm: float = 100.0
+    ffmi: float = 22.0
+    total_testosterone_ngdl: float = 600.0
+    free_testosterone_pgml: float = 12.0
+    shbg_nmoll: float = 40.0
+    estradiol_pgml: float = 30.0
+    cortisol_mcgdl: float = 15.0
+    thyroid_tsh: float = 2.0
+    igf1_ngml: float = 200.0
+    bio_age: int = 28
+    chronological_age: int = 30
+    resting_hr: int = 60
+    sleep_quality_score: float = 0.8
+    daily_steps: int = 10000
+    sedentary_hours: float = 8.0
+    job_physical_load: float = 0.5
+    protein_g_per_kg: float = 2.0
+    calorie_surplus_deficit: int = 0
+    bench_press_1rm_kg_per_kg: float = 1.2
+    squat_1rm_kg_per_kg: float = 1.5
+    deadlift_1rm_kg_per_kg: float = 1.8
+    doms_hours: int = 48
+    weight_growth_3m_percent: float = 10.0
+    has_time: bool = True
+    wants_split_early: bool = False
+    technical_regression: bool = False
+    injuries: List[str] = field(default_factory=list)
+    weak_points: List[str] = field(default_factory=list)
+    flags: Dict[str, bool] = field(default_factory=dict)
+
+    def level(self) -> Rank:
+        months = self.training_months + (6 if self.sport_background else 0)
+        if months < 6: return Rank.LOW
+        if months < 24: return Rank.MID
+        if months < 36: return Rank.HIGH
+        return Rank.ELITE
+
+# ==============================================================================
+# 2. МОДУЛЬ УРОЛОГІЇ ТА ФАРМАКОЛОГІЇ (UrologyEngine)
+# ==============================================================================
+
+class UrologyEngine:
+    def __init__(self, stack: List[Dict] = None):
+        self.stack = stack or []
+
+    def analyze_status(self) -> Dict:
+        asg_score = 0.0
+        joint_warning = False
+        recovery_index = 0.0
+        neuro_drive = 0.0
+        safety_score = 0.0
+
+        for drug in self.stack:
+            profile = DRUG_DATABASE.get(drug['name'])
+            if profile:
+                asg_score += profile.scores[0] * (drug['dose'] / profile.gold_dose) * (drug['week'] / 12)
+                recovery_index += profile.scores[2]
+                neuro_drive += profile.scores[0]
+                safety_score += profile.scores[3]
+                if profile.scores[3] < 5:
+                    joint_warning = True
+
+        return {
+            "asg_score": clamp(asg_score / len(self.stack), 0, 10),
+            "joint_warning": joint_warning,
+            "recovery_index": recovery_index / len(self.stack),
+            "neuro_drive": neuro_drive / len(self.stack),
+            "safety_score": safety_score / len(self.stack)
+        }
+
+# ==============================================================================
+# 3. KTCalculator (Коефіцієнт Тренованості)
+# ==============================================================================
+
+class KTCalculator:
+    @staticmethod
+    def calculate(data: UserFitnessData) -> float:
+        receptor = KTCalculator._receptor_sensitivity_score(data) * 0.25
+        genetic = KTCalculator._genetic_potential_score(data) * 0.2
+        recovery = KTCalculator._recovery_capacity(data) * 0.2
+        mitochondrial = KTCalculator._mitochondrial_density_score(data) * 0.15
+        nutrition = data.nutrition_compliance * 0.1
+        training_history = min(data.training_history_months / 36, 1.0) * 0.1
+
+        tc = receptor + genetic + recovery + mitochondrial + nutrition + training_history
+        return round(clamp(tc, 0.0, 1.0), 2)
+
+    @staticmethod
+    def _receptor_sensitivity_score(data: UserFitnessData) -> float:
+        free_test_ratio = data.free_testosterone_pgml / max(data.shbg_nmoll, 1)
+        estradiol_penalty = max(0, data.estradiol_pgml - 40) / 100
+        return clamp(0.6 + (free_test_ratio / 20) - estradiol_penalty, 0.4, 1.0)
+
+    @staticmethod
+    def _mitochondrial_density_score(data: UserFitnessData) -> float:
+        hrv_bonus = data.hrv_avg / 100
+        rhr_penalty = max(0, (data.resting_hr - 50) / 30)
+        return clamp(0.5 + hrv_bonus - rhr_penalty, 0.3, 1.0)
+
+    @staticmethod
+    def _recovery_capacity(data: UserFitnessData) -> float:
+        sleep = data.sleep_hours_avg / 8.0 * data.sleep_quality_score
+        hrv = data.hrv_avg / 100
+        cortisol_penalty = max(0, (data.cortisol_mcgdl - 15) / 20)
+        return clamp((sleep * 0.5 + hrv * 0.4 - cortisol_penalty * 0.1), 0.4, 1.0)
+
+    @staticmethod
+    def _genetic_potential_score(data: UserFitnessData) -> float:
+        meso_bonus = data.meso_weight
+        frame_bonus = (data.chest_cm / data.height_cm) * 2
+        wrist_bonus = data.wrist_cm / 18
+        return clamp(0.5 + meso_bonus + (frame_bonus - 1.0) + (wrist_bonus - 1.0), 0.4, 1.0)
+
+    @staticmethod
+    def predict_progress(data: UserFitnessData, months: int = 6) -> Dict:
+        tc = KTCalculator.calculate(data)
+        base_muscle_gain_kg = tc * 0.5 * months
+        fat_loss_potential_percent = tc * 1.5 * months
+        strength_gain_percent = tc * 15 * months / 6
+
+        if data.on_pharma:
+            base_muscle_gain_kg *= 1.8
+            strength_gain_percent *= 1.6
+        age_penalty = max(0, (data.bio_age - data.chronological_age) / 20)
+        base_muscle_gain_kg *= (1 - age_penalty)
+
+        return {
+            "trainability_coefficient": tc,
+            "potential_muscle_gain_kg_6m": round(base_muscle_gain_kg, 1),
+            "potential_fat_loss_percent_6m": round(fat_loss_potential_percent, 1),
+            "potential_strength_gain_percent_6m": round(strength_gain_percent, 1),
+            "recommendations": KTCalculator._get_recommendations(tc)
+        }
+
+    @staticmethod
+    def _get_recommendations(tc: float) -> List[str]:
+        recs = []
+        if tc < 0.6:
+            recs += ["Низький TC: аналізи тестостерону/щитовидки + ZMA/бор + омега-3 для рецепторів"]
+            recs += ["Крапельниця віт C/глутатіон для відновлення/антиейджингу"]
+        if tc < 0.7:
+            recs += ["Покращення сну/HRV: магній + адаптогени (ашваганда) для психоемоційного стану"]
+        if tc > 0.8:
+            recs += ["Високий TC: можливий перехід до інтенсивності/спліту. Преміум для фарми/ПКТ (USDT/Web3)"]
+        return recs
+
+# ==============================================================================
+# 4. AntiFitnessCore (Ядро системи)
+# ==============================================================================
+
+class Indexes:
+    def __init__(self, user: UserProfile):
+        self.user = user
+
+    def arp(self) -> float:
+        sleep = clamp((self.user.sleep_hours_avg / 8) * 100, 0, 100)
+        hrv = clamp(self.user.hrv, 0, 100)
+        fatigue = clamp(100 - self.user.fatigue * 10, 0, 100)
+        hormone = self.user.hormone_balance * 100
+        return clamp((sleep * 0.3 + hrv * 0.3 + fatigue * 0.2 + hormone * 0.2), 0, 100)
+
+    def progress_score(self) -> float:
+        return 85.0  # Заглушка
+
+class PlateauEngine:
+    def __init__(self, user: UserProfile, arp_trend: float):
+        self.user = user
+        self.arp_trend = arp_trend
+
+    def analyze(self) -> Dict:
+        weight_growth = self.user.weight_growth_3m_percent
+        if weight_growth < 5 or self.arp_trend < 70:
+            status = "плато"
+            recs = ["Перевір сон/харчування (нутрі-агент)", "Аналізи тестостерону/щитовидки (уролог)", "Додай таурин/CoQ10/PQQ (ССС/мітохондрії/антиейджинг)", "Зменши об'єм на 20-30% на 1-2 тижні"]
+            if self.user.on_pharma:
+                recs.append("ПКТ/аналізи обов'язкові (преміум)")
+        else:
+            status = "прогрес"
+            recs = ["Продовжуй. Наступний крок прогресії."]
+        return {"status": status, "recommendations": recs}
+
+class RulesEngine:
+    def __init__(self, user: UserProfile):
+        self.user = user
+
+    def failure_rules(self) -> Dict[ExerciseStyle, Dict]:
+        lvl = self.user.level()
+        phase = self.user.phase()
+        return {
+            ExerciseStyle.LIFTING: {
+                "allowed": phase != ProgramPhase.ADAPTATION,
+                "exception": phase == ProgramPhase.ADAPTATION and {"frequency": "1 раз/4-6 тижнів", "conditions": ["1 сет", "повна страховка"]},
+                "normal": {"frequency_per_month": 1 if phase == ProgramPhase.BASE else 2}
+            },
+            ExerciseStyle.ATHLETISM: {
+                "allowed": True,
+                "tools": ["assisted reps", "rest-pause", "mechanical drop"],
+                "warning": "НІ повної відмови до падіння — безпека суглобів"
+            },
+            ExerciseStyle.BODYBUILDING: {
+                "allowed": True,
+                "mandatory_failure_last_set": phase != ProgramPhase.ADAPTATION
+            }
+        }
+
+    def progression_rules(self) -> Dict:
+        return {
+            "current_step": ProgressionStep.REPS,  # Динамічний
+            "hierarchy": [e.value for e in ProgressionStep],
+            "conditions_for_next": "вичерпано попередній крок + сон/харчування/ARP ок"
+        }
+
+    def restrictions(self) -> Dict:
+        return {
+            "max_exercises_per_group": 4,
+            "enforced": True,
+            "replacement_over_volume": True
+        }
+
+class AntiFitnessCore:
+    def __init__(self, user: UserProfile):
+        self.user = user
+        self.rules = RulesEngine(user)
+        self.plateau = PlateauEngine(user, current_arp=78.0)
+
+    def system_status(self) -> Dict:
+        return {
+            "phase": self.user.phase().value,
+            "failure_rules": self.rules.failure_rules(),
+            "progression": self.rules.progression_rules(),
+            "restrictions": self.rules.restrictions(),
+            "plateau_analysis": self.plateau.analyze(),
+            "biohacks_priority": [
+                "Мітохондрії: PQQ/CoQ10 + MIIT кардіо (відновлення/антиейджинг)",
+                "ССС: таурин + контроль тиску",
+                "Тестостерон: сон + ZMA + аналізи (уролог)",
+                "Вуглеводний обмін: хром + циклічні вуглеводи (нутри)"
+            ],
+            "next_steps": "Стабільний ріст → перехід на 3 тренування → спліт тільки при повній готовності"
+        }
+
+# ==============================================================================
+# 5. SplitSystem (Лайт спліт)
+# ==============================================================================
+
+class SplitDecisionEngine:
+    def __init__(self):
+        self.heavy_history: Dict[MuscleGroup, List[datetime]] = {group: [] for group in MuscleGroup}
+        self.global_heavy_last7: List[datetime] = []
+
+    def _update_history(self, primary: MuscleGroup, secondary: List[MuscleGroup], load_type: LoadType):
+        if load_type == LoadType.HEAVY:
+            today = datetime.now()
+            # Primary: 1.0
+            self.heavy_history[primary].append(today)
+            self.global_heavy_last7.append(today)
+            # Secondary: 0.5 (фіксуємо кожну другу)
+            for sec in secondary:
+                if len(self.heavy_history[sec]) % 2 == 0:
+                    self.heavy_history[sec].append(today)
+            week_ago = today - timedelta(days=7)
+            self.global_heavy_last7 = [d for d in self.global_heavy_last7 if d > week_ago]
+            for g in self.heavy_history:
+                self.heavy_history[g] = [d for d in self.heavy_history[g] if d > week_ago]
+
+    def decide_load(self, primary_group: MuscleGroup, readiness: DailyReadiness) -> LoadType:
+        if not (readiness.sleep_ok and readiness.nutrition_ok and readiness.subjective_ok):
+            return LoadType.LIGHT
+        
+        if readiness.trainability_coeff < 0.65:
+            return LoadType.LIGHT
+        
+        if len(self.global_heavy_last7) >= 2:
+            return LoadType.NORMAL if readiness.trainability_coeff > 0.8 else LoadType.LIGHT
+        
+        group_count = len(self.heavy_history[primary_group])
+        if group_count >= 2:
+            return LoadType.NORMAL
+        
+        if readiness.trainability_coeff >= 0.8:
+            load = LoadType.HEAVY
+        elif readiness.trainability_coeff >= 0.7:
+            load = LoadType.NORMAL
+        else:
+            load = LoadType.LIGHT
+        
+        return load
+
+    def can_quarter_pyramid(self, readiness: DailyReadiness, load_type: LoadType) -> bool:
+        return (load_type != LoadType.HEAVY and 
+                readiness.trainability_coeff >= 0.65 and 
+                readiness.sleep_ok and readiness.nutrition_ok)
+
+class SplitComposer:
+    def __init__(self, variant: SplitVariant, decision_engine: SplitDecisionEngine):
+        self.variant = variant
+        self.de = decision_engine
+
+    def compose_day(self, slot: SplitSlot, readiness: DailyReadiness) -> Dict:
+        if self.variant == SplitVariant.ARMS_FOCUS and slot == SplitSlot.PUSH:
+            # Arms-focus: max 2 жими, пріоритет пампу рук
+            primary = MuscleGroup.CHEST
+            secondary = [MuscleGroup.SHOULDERS, MuscleGroup.TRICEPS, MuscleGroup.FOREARM]
+            jims_count = 2  # Заглушка, рахувати з атомів
+            if jims_count > 2:
+                return {"error": "Перевищено жими в arms-focus"}
+        else:
+            primary, secondary = self._get_groups(slot)
+        
+        load = self.de.decide_load(primary, readiness)
+        quarter = self.de.can_quarter_pyramid(readiness, load)
+        
+        atoms = [a for a in TRAINING_ATOMS if a.primary_group == primary or a.primary_group in secondary]
+        atoms = atoms[:4]
+        
+        if slot == SplitSlot.PULL:
+            width_count = sum(1 for a in atoms if a.back_vector == BackVector.WIDTH)
+            thickness_count = sum(1 for a in atoms if a.back_vector == BackVector.THICKNESS)
+            if width_count < 1 or thickness_count < 1:
+                return {"error": "Недостатньо ширини/товщини спини"}
+        
+        self.de._update_history(primary, secondary, load)
+        
+        plan = {
+            "slot": slot.value,
+            "primary_group": primary.value,
+            "load_type": load.value,
+            "pyramid_schema": PyramidSchema.CLASSIC.value if load == LoadType.HEAVY else (PyramidSchema.ALMOST.value if quarter and load == LoadType.NORMAL else PyramidSchema.FIVE_THREE.value if load == LoadType.HEAVY and "5-3" in atoms[0].notes else None),
+            "exercises": [
+                {
+                    "name": atom.name,
+                    "sets_reps": atom.base_sets_reps + (" + heavy піраміда" if (load == LoadType.HEAVY and "lifting" in atom.style) else 
+                                                        (" + intensity" if ("bodybuilding" in atom.style and load == LoadType.NORMAL) else ""),
+                    "notes": atom.notes
+                } for atom in atoms
+            ],
+            "compensation_note": "Якщо heavy — наступне тренування групи light/normal"
+        }
+        # Forearm/calves: завжди NORMAL/LIGHT, reps 20-35
+        for atom in atoms:
+            if atom.primary_group in [MuscleGroup.FOREARM, MuscleGroup.CALVES]:
+                atom.base_sets_reps = "3-4×20-35"
+                load = LoadType.NORMAL if readiness.trainability_coeff > 0.7 else LoadType.LIGHT
+        
+        return plan
+
+    def _get_groups(self, slot: SplitSlot) -> Tuple[MuscleGroup, List[MuscleGroup]]:
+        if slot == SplitSlot.PUSH:
+            return MuscleGroup.CHEST, [MuscleGroup.TRICEPS, MuscleGroup.FOREARM]
+        elif slot == SplitSlot.PULL:
+            return MuscleGroup.BACK, [MuscleGroup.BICEPS, MuscleGroup.TRAPS]
+        elif slot == SplitSlot.LEGS:
+            return MuscleGroup.LEGS, [MuscleGroup.SHOULDERS, MuscleGroup.CALVES]
+        else:
+            return MuscleGroup.TRICEPS, [MuscleGroup.FOREARM]
+
+# ==============================================================================
+# 6. AntiFitnessAgent (Повний агент)
+# ==============================================================================
+
+class AntiFitnessAgent:
+    def __init__(self, passport: UserProfile, kt: float):
+        self.passport = passport
+        self.kt = kt
+
+    def build_session(self, day: str, h_ctx: Dict, sleep_score: float):
+        # Логіка генерації сесії
+        # ... (інтеграція з Urology, KT, LoadManager тощо)
+        return {"example_session": "Generated"}
+
+    def anti_lie_check(self, reported_rpe: int, actual_reps: int, target_reps: int, backoff_feel: str):
+        # Детектор брехні
+        # ... (логіка з файлів)
+        return True, "Honest"
+
+# Тест
+if __name__ == "__main__":
+    # Приклад тесту з файлів
+    readiness = DailyReadiness()
+    de = SplitDecisionEngine()
+    composer = SplitComposer(SplitVariant.STANDARD, de)
+    plan_push = composer.compose_day(SplitSlot.PUSH, readiness)
+    print(plan_push)
+
+Що треба додати 
+Модуль Біомеханічних Важелів (Levers Logic)
+Python
+
+from enum import Enum
+from dataclasses import dataclass
+
+class LeverType(Enum):
+    SHORT = "Короткі важелі (Танк)"        # Ідеально для присіду/жиму
+    NORMAL = "Пропорційні важелі"         # Стандарт
+    LONG = "Довгі важелі (Павук)"         # Важко присідати, легко тягнути
+    ASYMMETRIC = "Асиметрія (Ризик)"      # Різниця в довжині або об'ємах
+
+@dataclass
+class Anthropometry:
+    height: float          # см
+    weight: float          # кг
+    leg_length: float      # см (від гребня клубової кістки до підлоги)
+    arm_span: float        # см (розмах рук - часто корелює з довжиною рук)
+    
+    # Об'єми для перевірки асиметрії (з файлу МВП)
+    bicep_l: float = 0
+    bicep_r: float = 0
+    calves_l: float = 0
+    calves_r: float = 0
+
+    def get_lever_type(self) -> LeverType:
+        """
+        Логіка з МВП: визначає тип атлета за індексом кінцівок.
+        Співвідношення довжини ніг до зросту (Leg-to-Height Ratio).
+        """
+        ratio = self.leg_length / self.height
+        
+        # Перевірка асиметрії кінцівок (>1см різниці в об'ємах)
+        if abs(self.bicep_l - self.bicep_r) > 1.0 or abs(self.calves_l - self.calves_r) > 1.0:
+            return LeverType.ASYMMETRIC
+
+        if ratio > 0.52:    # Ноги довші за 52% зросту
+            return LeverType.LONG
+        elif ratio < 0.47:  # Ноги коротші за 47% зросту
+            return LeverType.SHORT
+        else:
+            return LeverType.NORMAL
+
+    def get_cost_modifier(self, exercise_name: str) -> float:
+        """
+        Визначає 'штраф' або 'бонус' до вартості вправи (Cost Calculator).
+        """
+        lever = self.get_lever_type()
+        
+        # Логіка для Присідань (Squat)
+        if "squat" in exercise_name.lower():
+            if lever == LeverType.LONG: return 1.3   # Довгому присідати дуже 'дорого'
+            if lever == LeverType.SHORT: return 0.9  # Короткому легко (бонус)
+        
+        # Логіка для Станової тяги (Deadlift)
+        if "deadlift" in exercise_name.lower():
+            if lever == LeverType.LONG: return 0.85  # Павукам тягнути легко
+            if lever == LeverType.SHORT: return 1.2  # Танкам тягнути важко (мала амплітуда, але незручно)
+            
+        # Якщо атлет високий (>188 см як у твоєму файлі МВП)
+        if self.height > 188:
+            return 1.2 # Глобальний штраф на осьове навантаження
+            
+        return 1.0
+Чому це важливо для твого нового коду:
+	1.	Ціна вправи (Energy Budget): У файлі коеф код В2 ми рахуємо бали. Якщо в атлета довгі ноги, то 1 підхід присіду коштуватиме не 10 балів, а $10 \times 1.3 = 13$ балів. Це швидше вичерпає його ліміт на тренування і вбереже ЦНС. 
+	2.	Автоматична заміна (Substitutions): Якщо LeverType == LONG і Subjective_Pain == True, Агент автоматично замінить класичний присід на Присід у Сміті або Жим ногами, щоб прибрати небезпечне важелеве навантаження на поперек. 
+	3.	Асиметрія: Якщо Агент бачить ASYMMETRIC, він автоматично додає в план односторонні вправи (Unilateral), наприклад, болгарські випади, замість штанги. 
+
+
